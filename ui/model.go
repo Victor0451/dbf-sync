@@ -393,6 +393,9 @@ func (m *AppModel) handleEnter() (tea.Model, tea.Cmd) {
 	case StateQuit:
 		return m, tea.Quit
 
+	case StateSummary:
+		return m.goBack()
+
 	case StateInstalling:
 		m.state = StateInstallDone
 
@@ -413,14 +416,18 @@ func (m *AppModel) goBack() (tea.Model, tea.Cmd) {
 		m.loadMainMenu()
 		m.state = StateMainMenu
 	case StateSelectTable:
+		m.loadDatabases()
 		m.state = StateSelectDB
 	case StateSelectAction:
+		m.loadTables()
 		m.state = StateSelectTable
 	case StateBrowseFile:
+		m.loadActions()
 		m.state = StateSelectAction
 	case StateManualPath:
 		m.state = StateBrowseFile
 	case StateInputMonth:
+		m.loadActions()
 		m.state = StateSelectAction
 	case StateInputYear:
 		m.state = StateInputMonth
@@ -434,12 +441,12 @@ func (m *AppModel) goBack() (tea.Model, tea.Cmd) {
 		// Can't go back during processing
 		return m, nil
 	case StateSummary:
-		m.state = StateSelectDB
-		// Close connection if open
 		if m.conn != nil {
 			m.conn.Close()
 			m.conn = nil
 		}
+		m.loadDatabases()
+		m.state = StateSelectDB
 	case StateQuit:
 		m.state = m.prevState
 	case StateInstalling, StateInstallDone:
