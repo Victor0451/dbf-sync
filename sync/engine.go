@@ -23,48 +23,58 @@ type SyncResult struct {
 	Duration time.Duration
 }
 
-// NewEngine creates a new SyncEngine
-func NewEngine(cfg *config.Config) *SyncEngine {
-	return &SyncEngine{
-		config: cfg,
-	}
+// SyncOptions configures a sync operation.
+// Mode overrides the table config mode if set.
+// For cobrador action, set Action="cobrador", Month and Year.
+type SyncOptions struct {
+	Mode     string       // "append" | "upsert" | "cobrador" — overrides config if non-empty
+	DryRun   bool
+	Progress func(string) // nil = silent
+	Month    int          // cobrador: target month (1-12)
+	Year     int          // cobrador: target year
 }
 
-// SyncTable is a generic sync method that works with any table
-// It determines the sync mode from config or parameter
-func (e *SyncEngine) SyncTable(dbName string, tableName string, dbfPath string, mode string, dryRun bool) (SyncResult, error) {
+// NewEngine creates a new SyncEngine
+func NewEngine(cfg *config.Config) *SyncEngine {
+	return &SyncEngine{config: cfg}
+}
+
+// SyncTable is the single entry point for all sync operations.
+// It loads config, connects to MySQL, reads the DBF file, runs the
+// appropriate sync strategy, applies post rules, and returns the result.
+func (e *SyncEngine) SyncTable(dbName, tableName, dbfPath string, opts SyncOptions) (SyncResult, error) {
 	startTime := time.Now()
 
-	// Get database config
-	dbCfg, err := e.config.GetDatabase(dbName)
-	if err != nil {
-		return SyncResult{}, fmt.Errorf("failed to get database config: %w", err)
-	}
-
-	// Get table config if available
-	var tableCfg *config.TableConfig
-	tableCfg, err = e.config.GetTableConfig(tableName)
-	if err != nil {
-		// Table config not found, use defaults
-		tableCfg = &config.TableConfig{
-			Mode:      "",
-			MatchKeys: nil,
+	logf := func(format string, args ...interface{}) {
+		if opts.Progress != nil {
+			opts.Progress(fmt.Sprintf(format, args...))
 		}
 	}
 
-	// Determine sync mode: CLI flag > table config > default "upsert"
-	syncMode := mode
-	if syncMode == "" {
-		syncMode = tableCfg.Mode
-	}
-	if syncMode == "" {
-		syncMode = "upsert"
+	// Load database config
+	dbCfg, err := e.config.GetDatabase(dbName)
+	if err != nil {
+		return SyncResult{}, fmt.Errorf("database %q not found in config: %w", dbName, err)
 	}
 
-	// Determine match keys: table config > sensible defaults
+	// Load table config (use zero value if not configured)
+	tableCfg, _ := e.config.GetTableConfig(tableName)
+	if tableCfg == nil {
+		tableCfg = &config.TableConfig{}
+	}
+
+	// Resolve sync mode: opts > config > default "upsert"
+	mode := opts.Mode
+	if mode == "" {
+		mode = tableCfg.Mode
+	}
+	if mode == "" {
+		mode = "upsert"
+	}
+
+	// Resolve match keys: config > default "id"
 	matchKeys := tableCfg.MatchKeys
 	if len(matchKeys) == 0 {
-		// Try to use first column as default match key
 		matchKeys = []string{"id"}
 	}
 
@@ -75,159 +85,86 @@ func (e *SyncEngine) SyncTable(dbName string, tableName string, dbfPath string, 
 	}
 	defer conn.Close()
 
-	// Open DBF file
+	// Open and read DBF file
+	logf("  Leyendo archivo DBF...\n")
 	dbfFile, err := dbf.OpenDBF(dbfPath)
 	if err != nil {
 		return SyncResult{}, fmt.Errorf("failed to open DBF file: %w", err)
 	}
 	defer dbfFile.Close()
 
-	// Read all records
 	records, err := dbfFile.ReadAll()
 	if err != nil {
 		return SyncResult{}, fmt.Errorf("failed to read DBF records: %w", err)
 	}
+	logf("  %d registros leidos del DBF\n", len(records))
 
 	var inserted, updated, skipped int
-	var errors []error
+	var syncErrors []error
 
-	if syncMode == "append" {
-		// Append mode: get last ID and insert only new records
-		lastID, err := conn.GetLastRecordID(tableName, matchKeys[0])
+	switch mode {
+	case "cobrador":
+		logf("  Modo: actualizar cobradores %02d/%d\n", opts.Month, opts.Year)
+		updated, syncErrors = mysql.UpdateCobradorByMonth(
+			conn.DB(), dbCfg.Database, tableName,
+			records, opts.Month, opts.Year,
+			opts.DryRun, opts.Progress,
+		)
+
+	case "append":
+		logf("  Modo: append (insertar nuevos)\n")
+		matchKey := matchKeys[0]
+		lastID, err := conn.GetLastRecordID(tableName, matchKey)
 		if err != nil {
-			return SyncResult{}, fmt.Errorf("failed to get last record ID: %w", err)
+			logf("  Tabla vacia o sin registros previos, insertando todo\n")
+			lastID = 0
+		}
+		filtered := mysql.FilterRecordsByID(records, matchKey, lastID)
+		skipped = len(records) - len(filtered)
+		logf("  Nuevos: %d | Existentes: %d\n", len(filtered), skipped)
+
+		inserted, syncErrors = mysql.SyncTableAppend(
+			conn.DB(), dbCfg.Database, tableName,
+			filtered, matchKey, opts.DryRun, opts.Progress,
+		)
+
+		// Apply post-insert rules (e.g. maestro: ESTADO=1)
+		if !opts.DryRun && inserted > 0 && len(tableCfg.PostInsert) > 0 {
+			logf("  Aplicando reglas post-insert...\n")
+			if err := mysql.ApplyPostRules(conn.DB(), dbCfg.Database, tableName, filtered, matchKeys, tableCfg.PostInsert, opts.Progress); err != nil {
+				syncErrors = append(syncErrors, err)
+			}
 		}
 
-		// Filter records where id > lastID
-		filteredRecords := mysql.FilterRecordsByID(records, matchKeys[0], lastID)
-		skipped = len(records) - len(filteredRecords)
+	default: // "upsert"
+		logf("  Modo: upsert (insertar + actualizar)\n")
+		inserted, updated, syncErrors = mysql.SyncTableUpsert(
+			conn.DB(), dbCfg.Database, tableName,
+			records, matchKeys, opts.DryRun, opts.Progress,
+		)
 
-		inserted, errors = mysql.SyncTableAppend(conn.DB(), dbName, tableName, filteredRecords, matchKeys[0], dryRun, nil)
-	} else {
-		// Upsert mode: check existence and update or insert
-		inserted, updated, errors = mysql.SyncTableUpsert(conn.DB(), dbName, tableName, records, matchKeys, dryRun, nil)
+		// Apply post rules (e.g. adherent: ESTADO based on BAJA)
+		if !opts.DryRun {
+			if inserted > 0 && len(tableCfg.PostInsert) > 0 {
+				logf("  Aplicando reglas post-insert...\n")
+				if err := mysql.ApplyPostRules(conn.DB(), dbCfg.Database, tableName, records, matchKeys, tableCfg.PostInsert, opts.Progress); err != nil {
+					syncErrors = append(syncErrors, err)
+				}
+			}
+			if updated > 0 && len(tableCfg.PostUpdate) > 0 {
+				logf("  Aplicando reglas post-update...\n")
+				if err := mysql.ApplyPostRules(conn.DB(), dbCfg.Database, tableName, records, matchKeys, tableCfg.PostUpdate, opts.Progress); err != nil {
+					syncErrors = append(syncErrors, err)
+				}
+			}
+		}
 	}
-
-	duration := time.Since(startTime)
 
 	return SyncResult{
 		Inserted: inserted,
 		Updated:  updated,
 		Skipped:  skipped,
-		Errors:   len(errors),
-		Duration: duration,
-	}, nil
-}
-
-// SyncPagos syncs the pagos table
-func (e *SyncEngine) SyncPagos(dbName string, dbfPath string, dryRun bool) (SyncResult, error) {
-	startTime := time.Now()
-
-	// Get database config
-	dbCfg, err := e.config.GetDatabase(dbName)
-	if err != nil {
-		return SyncResult{}, fmt.Errorf("failed to get database config: %w", err)
-	}
-
-	// Get table config
-	tableCfg, err := e.config.GetTableConfig("pagos")
-	if err != nil {
-		return SyncResult{}, fmt.Errorf("failed to get table config: %w", err)
-	}
-
-	// Connect to MySQL
-	conn, err := mysql.NewConnection(*dbCfg)
-	if err != nil {
-		return SyncResult{}, fmt.Errorf("failed to connect to MySQL: %w", err)
-	}
-	defer conn.Close()
-
-	// Open DBF file
-	dbfFile, err := dbf.OpenDBF(dbfPath)
-	if err != nil {
-		return SyncResult{}, fmt.Errorf("failed to open DBF file: %w", err)
-	}
-	defer dbfFile.Close()
-
-	// Read all records
-	records, err := dbfFile.ReadAll()
-	if err != nil {
-		return SyncResult{}, fmt.Errorf("failed to read DBF records: %w", err)
-	}
-
-	// Run sync
-	inserted, updated, errors := mysql.SyncPagos(conn.DB(), dbName, records, tableCfg.MatchKeys, dryRun, nil)
-
-	duration := time.Since(startTime)
-
-	return SyncResult{
-		Inserted: inserted,
-		Updated:  updated,
-		Skipped:  0,
-		Errors:   len(errors),
-		Duration: duration,
-	}, nil
-}
-
-// SyncPagoBco syncs the pago_bco table in append mode
-func (e *SyncEngine) SyncPagoBco(dbName string, dbfPath string, dryRun bool) (SyncResult, error) {
-	startTime := time.Now()
-
-	// Get database config
-	dbCfg, err := e.config.GetDatabase(dbName)
-	if err != nil {
-		return SyncResult{}, fmt.Errorf("failed to get database config: %w", err)
-	}
-
-	// Get table config
-	tableCfg, err := e.config.GetTableConfig("pago_bco")
-	if err != nil {
-		return SyncResult{}, fmt.Errorf("failed to get table config: %w", err)
-	}
-
-	// Connect to MySQL
-	conn, err := mysql.NewConnection(*dbCfg)
-	if err != nil {
-		return SyncResult{}, fmt.Errorf("failed to connect to MySQL: %w", err)
-	}
-	defer conn.Close()
-
-	// Get last ID from MySQL
-	lastID, err := conn.GetLastRecordID("pago_bco", "id")
-	if err != nil {
-		return SyncResult{}, fmt.Errorf("failed to get last record ID: %w", err)
-	}
-
-	// Open DBF file
-	dbfFile, err := dbf.OpenDBF(dbfPath)
-	if err != nil {
-		return SyncResult{}, fmt.Errorf("failed to open DBF file: %w", err)
-	}
-	defer dbfFile.Close()
-
-	// Read all records
-	allRecords, err := dbfFile.ReadAll()
-	if err != nil {
-		return SyncResult{}, fmt.Errorf("failed to read DBF records: %w", err)
-	}
-
-	// Filter records where id > lastMySQLID
-	idField := "id"
-	if len(tableCfg.MatchKeys) > 0 {
-		idField = tableCfg.MatchKeys[0]
-	}
-	records := mysql.FilterRecordsByID(allRecords, idField, lastID)
-
-	// Run append sync
-	inserted, errors := mysql.AppendPagoBco(conn.DB(), dbCfg.Database, records, idField, dryRun)
-
-	duration := time.Since(startTime)
-
-	return SyncResult{
-		Inserted: inserted,
-		Updated:  0,
-		Skipped:  len(allRecords) - len(records),
-		Errors:   len(errors),
-		Duration: duration,
+		Errors:   len(syncErrors),
+		Duration: time.Since(startTime),
 	}, nil
 }

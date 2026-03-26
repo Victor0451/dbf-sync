@@ -14,8 +14,8 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"dbf-sync/config"
-	"dbf-sync/dbf"
 	"dbf-sync/mysql"
+	syncer "dbf-sync/sync"
 )
 
 // AppState represents the different screens in the TUI
@@ -67,6 +67,7 @@ type AppModel struct {
 	config      *config.Config
 	configPath  string
 	version     string
+	engine      *syncer.SyncEngine
 
 	// DB connection
 	db       string
@@ -174,6 +175,7 @@ func NewAppModel(configPath, version string) *AppModel {
 		config:      cfg,
 		configPath:  configPath,
 		version:     version,
+		engine:      syncer.NewEngine(cfg),
 		currentDir:  defaultDir,
 		dirEntries:  []DirEntry{},
 		cursor:      0,
@@ -767,7 +769,7 @@ func (m *AppModel) connectAndLoadTables() tea.Cmd {
 	}
 }
 
-// runSync runs the sync operation
+// runSync runs the sync operation via the sync engine
 func (m *AppModel) runSync() tea.Cmd {
 	return func() tea.Msg {
 		if m.progressCh != nil {
@@ -787,82 +789,52 @@ func (m *AppModel) runSync() tea.Cmd {
 			}
 		}
 
-		// Get record count BEFORE
-		recordsBefore, err := m.conn.GetRecordCount(m.table)
-		if err != nil {
-			recordsBefore = 0
+		opts := syncer.SyncOptions{
+			DryRun:   false,
+			Progress: progress,
 		}
-
-		// Get table config
-		tableConfig, _ := m.config.GetTableConfig(m.table)
-		matchKeys := tableConfig.MatchKeys
-		if len(matchKeys) == 0 {
-			matchKeys = []string{"id"}
-		}
-
-		// Read DBF file
-		dbfFile, err := dbf.OpenDBF(m.dbfPath)
-		if err != nil {
-			return errorMsg{err}
-		}
-		defer dbfFile.Close()
-
-		records, err := dbfFile.ReadAll()
-		if err != nil {
-			return errorMsg{err}
-		}
-
-		var inserted, updated int
-		var errors []error
-
-		startTime := time.Now()
 
 		switch m.action {
-		case "insert":
-			matchKey := matchKeys[0]
-			maxID, _ := m.conn.GetLastRecordID(m.table, matchKey)
-			filteredRecords := mysql.FilterRecordsByID(records, matchKey, maxID)
-			inserted, errors = mysql.SyncTableAppend(m.conn.DB(), m.db, m.table, filteredRecords, matchKey, false, progress)
-
-			if tableConfig != nil && len(tableConfig.PostInsert) > 0 && inserted > 0 {
-				mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, filteredRecords, matchKeys, tableConfig.PostInsert, progress)
-			}
-
 		case "cobrador":
-			updated, errors = mysql.UpdateCobradorByMonth(m.conn.DB(), m.db, m.table, records, m.month, m.year, false, progress)
-
+			opts.Mode = "cobrador"
+			opts.Month = m.month
+			opts.Year = m.year
+		case "insert":
+			opts.Mode = "append"
 		case "full":
-			inserted, updated, errors = mysql.SyncTableUpsert(m.conn.DB(), m.db, m.table, records, matchKeys, false, progress)
+			opts.Mode = "upsert"
+		default:
+			opts.Mode = m.action
+		}
 
-			if tableConfig != nil {
-				if len(tableConfig.PostInsert) > 0 && inserted > 0 {
-					mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, records, matchKeys, tableConfig.PostInsert, progress)
-				}
-				if len(tableConfig.PostUpdate) > 0 && updated > 0 {
-					mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, records, matchKeys, tableConfig.PostUpdate, progress)
-				}
-			}
+		// Get record count BEFORE
+		recordsBefore, _ := m.conn.GetRecordCount(m.table)
+
+		result, err := m.engine.SyncTable(m.db, m.table, m.dbfPath, opts)
+		if err != nil {
+			return errorMsg{err}
 		}
 
 		// Get record count AFTER
 		recordsAfter, _ := m.conn.GetRecordCount(m.table)
 
+		period := ""
+		if m.action == "cobrador" && m.month > 0 {
+			period = time.Date(m.year, time.Month(m.month), 1, 0, 0, 0, 0, time.UTC).Format("01/2006")
+		}
+
 		m.result = &SyncResult{
 			Database:      m.db,
 			Table:         m.table,
 			Action:        m.action,
-			Period:        "",
+			Period:        period,
 			RecordsBefore: int(recordsBefore),
-			Inserted:      inserted,
-			Updated:       updated,
-			Skipped:       len(records) - inserted - updated,
-			Errors:        len(errors),
+			Inserted:      result.Inserted,
+			Updated:       result.Updated,
+			Skipped:       result.Skipped,
+			Errors:        result.Errors,
 			RecordsAfter:  int(recordsAfter),
-			Duration:      time.Since(startTime),
-		}
-
-		if m.action == "cobrador" {
-			m.result.Period = time.Date(m.year, time.Month(m.month), 1, 0, 0, 0, 0, time.UTC).Format("01/2006")
+			Duration:      result.Duration,
 		}
 
 		return syncDoneMsg{}
