@@ -166,7 +166,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 
 		if len(filteredRecords) > 0 {
 			var appendErrs []error
-			inserted, appendErrs = mysql.SyncTableAppend(conn.DB(), syncTable, filteredRecords, matchKey, syncDryRun)
+			inserted, appendErrs = mysql.SyncTableAppend(conn.DB(), dbCfg.Database, syncTable, filteredRecords, matchKey, syncDryRun, nil)
 			if len(appendErrs) > 0 {
 				for _, e := range appendErrs {
 					PrintError("Append error: %v", e)

@@ -102,7 +102,7 @@ func (e *SyncEngine) SyncTable(dbName string, tableName string, dbfPath string, 
 		filteredRecords := mysql.FilterRecordsByID(records, matchKeys[0], lastID)
 		skipped = len(records) - len(filteredRecords)
 
-		inserted, errors = mysql.SyncTableAppend(conn.DB(), tableName, filteredRecords, matchKeys[0], dryRun)
+		inserted, errors = mysql.SyncTableAppend(conn.DB(), dbName, tableName, filteredRecords, matchKeys[0], dryRun, nil)
 	} else {
 		// Upsert mode: check existence and update or insert
 		inserted, updated, errors = mysql.SyncTableUpsert(conn.DB(), dbName, tableName, records, matchKeys, dryRun, nil)
@@ -219,7 +219,7 @@ func (e *SyncEngine) SyncPagoBco(dbName string, dbfPath string, dryRun bool) (Sy
 	records := mysql.FilterRecordsByID(allRecords, idField, lastID)
 
 	// Run append sync
-	inserted, errors := mysql.AppendPagoBco(conn.DB(), records, idField, dryRun)
+	inserted, errors := mysql.AppendPagoBco(conn.DB(), dbCfg.Database, records, idField, dryRun)
 
 	duration := time.Since(startTime)
 

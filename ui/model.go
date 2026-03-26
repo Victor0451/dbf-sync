@@ -822,7 +822,7 @@ func (m *AppModel) runSync() tea.Cmd {
 			matchKey := matchKeys[0]
 			maxID, _ := m.conn.GetLastRecordID(m.table, matchKey)
 			filteredRecords := mysql.FilterRecordsByID(records, matchKey, maxID)
-			inserted, errors = mysql.SyncTableAppend(m.conn.DB(), m.table, filteredRecords, matchKey, false)
+			inserted, errors = mysql.SyncTableAppend(m.conn.DB(), m.db, m.table, filteredRecords, matchKey, false, progress)
 
 			if tableConfig != nil && len(tableConfig.PostInsert) > 0 && inserted > 0 {
 				mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, filteredRecords, matchKeys, tableConfig.PostInsert, progress)
