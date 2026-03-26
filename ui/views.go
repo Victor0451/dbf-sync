@@ -146,12 +146,20 @@ func (m *AppModel) viewSelectTable() string {
 		return m.pageTitle("Error de conexion", nil, "Presiona cualquier tecla para volver...") +
 			errLine(m.err.Error())
 	}
-	header := m.pageTitle(
-		fmt.Sprintf("Seleccionar Tabla  [%s]", m.db),
-		nil,
-		"↑/↓  navegar    Enter  confirmar    Esc  volver",
-	)
-	return header + m.list.View()
+	hint := "↑/↓  navegar    Enter  confirmar    Esc  volver    [cfg] = tiene config"
+	header := m.pageTitle(fmt.Sprintf("Seleccionar Tabla  [%s]", m.db), nil, hint)
+
+	accentStyle := lipgloss.NewStyle().Foreground(Accent).Bold(true)
+	mutedStyle := lipgloss.NewStyle().Foreground(Muted)
+	var searchLine string
+	if m.tableSearch != "" {
+		searchLine = "  " + mutedStyle.Render("Filtro: ") + accentStyle.Render(m.tableSearch) +
+			mutedStyle.Render("_") + "\n\n"
+	} else {
+		searchLine = "  " + mutedStyle.Render("Escribi para filtrar...") + "\n\n"
+	}
+
+	return header + searchLine + m.list.View()
 }
 
 func (m *AppModel) viewSelectAction() string {

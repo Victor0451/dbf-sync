@@ -70,10 +70,11 @@ type AppModel struct {
 	engine      *syncer.SyncEngine
 
 	// DB connection
-	db       string
-	table    string
-	conn     *mysql.MySQLConnection
-	tables   []string
+	db          string
+	table       string
+	conn        *mysql.MySQLConnection
+	tables      []string
+	tableSearch string // live filter for table list
 
 	// Sync
 	action  string
@@ -234,6 +235,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case connectedMsg:
 		m.loading = false
+		m.tableSearch = ""
 		m.loadTables()
 
 	case progressMsg:
@@ -332,6 +334,14 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Table search: forward printable single chars to filter
+	if m.state == StateSelectTable && !m.loading {
+		if s := msg.String(); len(s) == 1 && s != " " {
+			m.tableSearch += s
+			m.loadTables()
+		}
+	}
+
 	return m, nil
 }
 
@@ -368,6 +378,11 @@ func (m *AppModel) moveDown() (tea.Model, tea.Cmd) {
 // handleBackspace handles backspace key
 func (m *AppModel) handleBackspace() (tea.Model, tea.Cmd) {
 	switch m.state {
+	case StateSelectTable:
+		if len(m.tableSearch) > 0 {
+			m.tableSearch = m.tableSearch[:len(m.tableSearch)-1]
+			m.loadTables()
+		}
 	case StateBrowseFile:
 		// Go up directory
 		parent := GetParentDir(m.currentDir)
@@ -440,6 +455,7 @@ func (m *AppModel) goBack() (tea.Model, tea.Cmd) {
 		m.loadMainMenu()
 		m.state = StateMainMenu
 	case StateSelectTable:
+		m.tableSearch = ""
 		m.loadDatabases()
 		m.state = StateSelectDB
 	case StateSelectAction:
@@ -696,13 +712,23 @@ func (m *AppModel) loadDatabases() {
 	m.list.SetItems(items)
 }
 
-// loadTables loads tables into the list
+// loadTables populates the list with tables, applying tableSearch filter.
+// Tables present in config are marked with [cfg].
 func (m *AppModel) loadTables() {
+	search := strings.ToLower(m.tableSearch)
 	items := make([]list.Item, 0, len(m.tables))
 	for _, t := range m.tables {
-		items = append(items, listItem{Display: t, Value: t})
+		if search != "" && !strings.Contains(strings.ToLower(t), search) {
+			continue
+		}
+		display := t
+		if _, hasCfg := m.config.Tables[t]; hasCfg {
+			display = t + "  [cfg]"
+		}
+		items = append(items, listItem{Display: display, Value: t})
 	}
 	m.list.SetItems(items)
+	m.list.Select(0)
 }
 
 // loadActions loads actions into the list
