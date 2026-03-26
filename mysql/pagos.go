@@ -89,7 +89,9 @@ func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.
 
 	// Step 5: Bulk UPDATE via temp table + JOIN (single SQL operation)
 	logf("  [5/5] Updating %d existing records via JOIN...\n", len(toUpdate))
-	updated, errors = bulkUpdateJoin(db, dbName, tableName, toUpdate, matchKeys, logf)
+	updateCount, updateErrs := bulkUpdateJoin(db, dbName, tableName, toUpdate, matchKeys, logf)
+	updated = updateCount
+	errors = append(errors, updateErrs...)
 
 	return
 }
@@ -136,18 +138,6 @@ func loadExistingKeys(db *sql.DB, dbName string, tableName string, matchKeys []s
 	return keys, rows.Err()
 }
 
-// buildKeyExpression builds a MySQL CONCAT expression for the composite key.
-// Handles NULL values and date formatting.
-func buildKeyExpression(matchKeys []string) string {
-	parts := make([]string, len(matchKeys))
-	for i, key := range matchKeys {
-		upper := strings.ToUpper(key)
-		// Use IFNULL to handle NULLs and COALESCE for safety
-		parts[i] = fmt.Sprintf("COALESCE(CAST(%s AS CHAR), '_NULL_')", upper)
-	}
-	return fmt.Sprintf("CONCAT_WS('|', %s)", strings.Join(parts, ", "))
-}
-
 // buildKey builds a composite key string from a DBF record.
 // Must match the MySQL key expression format.
 func buildKey(record dbf.DBFRecord, matchKeys []string) string {
@@ -179,59 +169,7 @@ func buildKey(record dbf.DBFRecord, matchKeys []string) string {
 	return strings.Join(parts, "|")
 }
 
-// batchInsert performs a multi-row INSERT for maximum performance.
-// Example: INSERT INTO table (a,b) VALUES (1,'x'), (2,'y'), (3,'z')
-func batchInsert(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord) error {
-	if len(records) == 0 {
-		return nil
-	}
-
-	// Get column names from first record (all records in batch have same columns)
-	firstRecord := records[0]
-	columns := make([]string, 0, len(firstRecord))
-	for col := range firstRecord {
-		columns = append(columns, col)
-	}
-
-	// Build multi-row VALUES clause
-	placeholders := "(" + strings.Repeat("?,", len(columns)-1) + "?)"
-	allPlaceholders := make([]string, len(records))
-	for i := range records {
-		allPlaceholders[i] = placeholders
-	}
-
-	// Collect all args
-	allArgs := make([]interface{}, 0, len(records)*len(columns))
-	for _, record := range records {
-		for _, col := range columns {
-			allArgs = append(allArgs, record[col])
-		}
-	}
-
-	query := fmt.Sprintf(
-		"INSERT INTO %s.%s (%s) VALUES %s",
-		dbName,
-		tableName,
-		strings.Join(columns, ", "),
-		strings.Join(allPlaceholders, ", "),
-	)
-
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-
-	_, err = tx.Exec(query, allArgs...)
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-
-	return tx.Commit()
-}
-
-// bulkInsert inserts all records in a single transaction, batching into groups of batchSize.
-// This is more efficient than calling batchInsert per batch (fewer BEGIN/COMMIT round-trips).
+// bulkInsert inserts all records in a single transaction, batching into groups of 500.
 func bulkInsert(db *sql.DB, dbName, tableName string, records []dbf.DBFRecord, logf func(string, ...interface{})) (int, []error) {
 	if len(records) == 0 {
 		return 0, nil
@@ -265,7 +203,7 @@ func bulkInsert(db *sql.DB, dbName, tableName string, records []dbf.DBFRecord, l
 			return 0, []error{fmt.Errorf("insert at record %d: %w", i, err)}
 		}
 		inserted += end - i
-		logf("  [4/5] Insertados %d / %d...\n", inserted, total)
+		logf("  Insertados %d / %d...\n", inserted, total)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -465,11 +403,6 @@ func getColumnsForTable(db *sql.DB, tableName string) ([]string, error) {
 	return columns, rows.Err()
 }
 
-// SyncPagos is kept for backward compatibility - delegates to SyncTableUpsert
-func SyncPagos(db *sql.DB, dbName string, records []dbf.DBFRecord, matchKeys []string, dryRun bool, progress func(string)) (inserted, updated int, errors []error) {
-	return SyncTableUpsert(db, dbName, "pagos", records, matchKeys, dryRun, progress)
-}
-
 // UpdateCobradorByMonth updates only cobrador records for a specific month
 // Filters by SERIE in [2,22] AND DIA_EMI = first day of month.
 //
@@ -527,8 +460,12 @@ func UpdateCobradorByMonth(db *sql.DB, dbName string, tableName string, records 
 
 	// Build WHERE clause: SERIE IN (2,22) AND DIA_EMI = target date
 	whereClause := fmt.Sprintf("SERIE IN (2,22) AND DIA_EMI = '%s'", targetDate.Format("2006-01-02"))
-	keyExpr := buildKeyExpression(matchKeys)
-	query := fmt.Sprintf("SELECT %s FROM %s.%s WHERE %s", keyExpr, dbName, tableName, whereClause)
+	upperKeys := make([]string, len(matchKeys))
+	for i, k := range matchKeys {
+		upperKeys[i] = strings.ToUpper(k)
+	}
+	query := fmt.Sprintf("SELECT %s FROM %s.%s WHERE %s",
+		strings.Join(upperKeys, ", "), dbName, tableName, whereClause)
 
 	rows, err := db.Query(query)
 	if err != nil {
@@ -537,14 +474,27 @@ func UpdateCobradorByMonth(db *sql.DB, dbName string, tableName string, records 
 	}
 	defer rows.Close()
 
+	n := len(matchKeys)
+	scanVals := make([]sql.NullString, n)
+	scanPtrs := make([]interface{}, n)
+	for i := range scanVals {
+		scanPtrs[i] = &scanVals[i]
+	}
+	parts := make([]string, n)
 	existingKeys := make(map[string]bool)
 	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
+		if err := rows.Scan(scanPtrs...); err != nil {
 			errors = append(errors, fmt.Errorf("failed to scan key: %w", err))
 			return
 		}
-		existingKeys[key] = true
+		for i, v := range scanVals {
+			if v.Valid {
+				parts[i] = v.String
+			} else {
+				parts[i] = "_NULL_"
+			}
+		}
+		existingKeys[strings.Join(parts, "|")] = true
 	}
 	logf("        Found %d existing cobrador records in MySQL\n", len(existingKeys))
 
@@ -591,9 +541,10 @@ func UpdateCobradorByMonth(db *sql.DB, dbName string, tableName string, records 
 }
 
 // ApplyPostRules applies post-insert/update rules to affected records.
-// It processes records in batches of 500 for efficiency.
+// For single-key tables: uses efficient IN clause batches.
+// For multi-key tables: uses temp table + JOIN (one query per rule instead of N batches).
 //
-// progress is an optional callback for step messages. Pass nil to suppress output (e.g. from TUI).
+// progress is an optional callback for step messages. Pass nil to suppress output.
 func ApplyPostRules(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, matchKeys []string, rules []config.PostRule, progress func(string)) error {
 	if len(records) == 0 || len(rules) == 0 {
 		return nil
@@ -605,113 +556,175 @@ func ApplyPostRules(db *sql.DB, dbName string, tableName string, records []dbf.D
 		}
 	}
 
-	logf("  [Post] Applying %d post-processing rules to %d records...\n", len(rules), len(records))
+	logf("  [Post] Applying %d rules to %d records...\n", len(rules), len(records))
 
-	batchSize := 500
-	for i := 0; i < len(records); i += batchSize {
-		end := i + batchSize
-		if end > len(records) {
-			end = len(records)
-		}
-		batch := records[i:end]
-
-		for _, rule := range rules {
-			if err := applyRuleBatch(db, dbName, tableName, batch, matchKeys, rule); err != nil {
-				return fmt.Errorf("post-rule apply failed: %w", err)
-			}
-		}
+	var err error
+	if len(matchKeys) == 1 {
+		err = applyPostRulesSingleKey(db, dbName, tableName, records, matchKeys[0], rules)
+	} else {
+		err = applyPostRulesMultiKey(db, dbName, tableName, records, matchKeys, rules)
+	}
+	if err != nil {
+		return err
 	}
 
 	logf("        Post-processing complete\n")
 	return nil
 }
 
-// applyRuleBatch applies a single rule to a batch of records
-func applyRuleBatch(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, matchKeys []string, rule config.PostRule) error {
-	if len(records) == 0 || len(rule.Set) == 0 {
+// applyPostRulesSingleKey applies rules using simple WHERE key IN (...) clauses.
+func applyPostRulesSingleKey(db *sql.DB, dbName, tableName string, records []dbf.DBFRecord, matchKey string, rules []config.PostRule) error {
+	keyUpper := strings.ToUpper(matchKey)
+
+	// Collect unique key values
+	seen := make(map[string]bool, len(records))
+	keys := make([]interface{}, 0, len(records))
+	for _, r := range records {
+		k := buildKey(r, []string{matchKey})
+		if !seen[k] {
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
 		return nil
 	}
 
-	// Build SET clause from rule.Set
-	setParts := make([]string, 0, len(rule.Set))
-	args := make([]interface{}, 0, len(rule.Set)+len(matchKeys)+1)
-	for col, val := range rule.Set {
-		setParts = append(setParts, fmt.Sprintf("%s = ?", col))
-		args = append(args, val)
-	}
-
-	// Build WHERE clause from match keys
-	whereParts := make([]string, len(matchKeys))
-	for i, key := range matchKeys {
-		whereParts[i] = fmt.Sprintf("%s = ?", key)
-	}
-
-	// Add the record key values to args (for IN clause)
-	// For IN clause we need all unique keys
-	keysForIn := make([]string, 0, len(records))
-	keyIndex := make(map[string]bool)
-	for _, record := range records {
-		key := buildKey(record, matchKeys)
-		if key != "" && !keyIndex[key] {
-			keysForIn = append(keysForIn, key)
-			keyIndex[key] = true
+	const batchSize = 1000
+	for _, rule := range rules {
+		if len(rule.Set) == 0 {
+			continue
 		}
-	}
-
-	if len(keysForIn) == 0 {
-		return nil
-	}
-
-	// Build WHERE clause with IN for all keys in batch
-	// Use subquery with VALUES row constructor for better performance
-	var whereClause string
-	if len(matchKeys) == 1 {
-		// Single key - use simple IN
-		placeholders := make([]string, len(keysForIn))
-		for j := range keysForIn {
-			placeholders[j] = "?"
+		setParts := make([]string, 0, len(rule.Set))
+		setArgs := make([]interface{}, 0, len(rule.Set))
+		for col, val := range rule.Set {
+			setParts = append(setParts, col+" = ?")
+			setArgs = append(setArgs, val)
 		}
-		whereClause = fmt.Sprintf("%s IN (%s)", strings.ToUpper(matchKeys[0]), strings.Join(placeholders, ", "))
-		// Add key values for IN clause
-		for _, k := range keysForIn {
-			args = append(args, k)
-		}
-	} else {
-		// Multiple keys - use (key1, key2) IN ((val1, val2), ...) pattern
-		// For simplicity, fall back to OR with AND for each key combination
-		// This is less efficient but handles multi-column keys
-		orParts := make([]string, 0, len(keysForIn))
-		orArgs := make([]interface{}, 0)
-		for _, key := range keysForIn {
-			parts := strings.Split(key, "|")
-			andParts := make([]string, 0, len(matchKeys))
-			for j, pk := range matchKeys {
-				if j < len(parts) {
-					andParts = append(andParts, fmt.Sprintf("%s = ?", strings.ToUpper(pk)))
-					orArgs = append(orArgs, parts[j])
-				}
+		setClause := strings.Join(setParts, ", ")
+
+		for i := 0; i < len(keys); i += batchSize {
+			end := i + batchSize
+			if end > len(keys) {
+				end = len(keys)
 			}
-			orParts = append(orParts, "("+strings.Join(andParts, " AND ")+")")
+			batch := keys[i:end]
+			ph := make([]string, len(batch))
+			for j := range ph {
+				ph[j] = "?"
+			}
+			where := fmt.Sprintf("%s IN (%s)", keyUpper, strings.Join(ph, ", "))
+			if rule.When != "" {
+				where += " AND " + rule.When
+			}
+			args := make([]interface{}, 0, len(setArgs)+len(batch))
+			args = append(args, setArgs...)
+			args = append(args, batch...)
+
+			query := fmt.Sprintf("UPDATE %s.%s SET %s WHERE %s", dbName, tableName, setClause, where)
+			if _, err := db.Exec(query, args...); err != nil {
+				return fmt.Errorf("post-rule failed: %w", err)
+			}
 		}
-		whereClause = "(" + strings.Join(orParts, " OR ") + ")"
-		args = append(args, orArgs...)
+	}
+	return nil
+}
+
+// applyPostRulesMultiKey uses a temp table + JOIN pattern for composite keys.
+// Loads all unique keys into a temp table once, then runs one UPDATE JOIN per rule.
+// For 700K records with 2 rules: ~140 batch inserts + 2 UPDATE JOINs vs 2800 OR-queries.
+func applyPostRulesMultiKey(db *sql.DB, dbName, tableName string, records []dbf.DBFRecord, matchKeys []string, rules []config.PostRule) error {
+	const tmpTable = "_dbfsync_pr"
+	const insertBatch = 5000
+
+	upperKeys := make([]string, len(matchKeys))
+	for i, k := range matchKeys {
+		upperKeys[i] = strings.ToUpper(k)
 	}
 
-	// Add WHEN condition if specified
-	if rule.When != "" {
-		whereClause = whereClause + " AND " + rule.When
+	// Collect unique key-only records
+	seen := make(map[string]bool, len(records))
+	keyRecords := make([]dbf.DBFRecord, 0, len(records))
+	for _, r := range records {
+		k := buildKey(r, matchKeys)
+		if !seen[k] {
+			seen[k] = true
+			rec := make(dbf.DBFRecord, len(matchKeys))
+			for _, mk := range upperKeys {
+				rec[mk] = r[mk]
+			}
+			keyRecords = append(keyRecords, rec)
+		}
+	}
+	if len(keyRecords) == 0 {
+		return nil
 	}
 
-	query := fmt.Sprintf("UPDATE %s.%s SET %s WHERE %s",
-		dbName,
-		tableName,
-		strings.Join(setParts, ", "),
-		whereClause,
-	)
-
-	_, err := db.Exec(query, args...)
+	// Create temp table with only match key columns
+	db.Exec("DROP TEMPORARY TABLE IF EXISTS " + tmpTable)
+	_, err := db.Exec(fmt.Sprintf(
+		"CREATE TEMPORARY TABLE %s AS SELECT %s FROM %s.%s WHERE 1=0",
+		tmpTable, strings.Join(upperKeys, ", "), dbName, tableName,
+	))
 	if err != nil {
-		return fmt.Errorf("failed to apply post-rule: %w", err)
+		return fmt.Errorf("create post-rule temp table: %w", err)
+	}
+	defer db.Exec("DROP TEMPORARY TABLE IF EXISTS " + tmpTable)
+
+	// Stable column order for inserts
+	columns := make([]string, len(upperKeys))
+	copy(columns, upperKeys)
+	sort.Strings(columns)
+
+	// Bulk insert keys
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin post-rule tx: %w", err)
+	}
+	for i := 0; i < len(keyRecords); i += insertBatch {
+		end := i + insertBatch
+		if end > len(keyRecords) {
+			end = len(keyRecords)
+		}
+		if err := batchInsertTx(tx, tmpTable, keyRecords[i:end], columns); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("post-rule temp insert: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit post-rule inserts: %w", err)
+	}
+
+	// Add index for efficient JOIN
+	db.Exec(fmt.Sprintf("ALTER TABLE %s ADD INDEX idx_pr (%s)", tmpTable, strings.Join(upperKeys, ", ")))
+
+	// Build ON clause
+	onParts := make([]string, len(upperKeys))
+	for i, k := range upperKeys {
+		onParts[i] = fmt.Sprintf("t.%s = u.%s", k, k)
+	}
+	onClause := strings.Join(onParts, " AND ")
+
+	// Apply each rule as a single UPDATE JOIN
+	for _, rule := range rules {
+		if len(rule.Set) == 0 {
+			continue
+		}
+		setParts := make([]string, 0, len(rule.Set))
+		args := make([]interface{}, 0, len(rule.Set))
+		for col, val := range rule.Set {
+			setParts = append(setParts, fmt.Sprintf("t.%s = ?", col))
+			args = append(args, val)
+		}
+		where := ""
+		if rule.When != "" {
+			where = " WHERE " + rule.When
+		}
+		query := fmt.Sprintf("UPDATE %s.%s t JOIN %s u ON %s SET %s%s",
+			dbName, tableName, tmpTable, onClause, strings.Join(setParts, ", "), where)
+		if _, err := db.Exec(query, args...); err != nil {
+			return fmt.Errorf("post-rule update join: %w", err)
+		}
 	}
 
 	return nil

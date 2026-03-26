@@ -55,12 +55,6 @@ func SyncTableAppend(db *sql.DB, dbName, tableName string, records []dbf.DBFReco
 	return
 }
 
-// AppendPagoBco is kept for backward compatibility with sync/engine.go.
-// Delegates to SyncTableAppend.
-func AppendPagoBco(db *sql.DB, dbName string, records []dbf.DBFRecord, idField string, dryRun bool) (inserted int, errors []error) {
-	return SyncTableAppend(db, dbName, "pago_bco", records, idField, dryRun, nil)
-}
-
 // FilterRecordsByID filters records to only those with ID > lastID.
 func FilterRecordsByID(records []dbf.DBFRecord, idField string, lastID int64) []dbf.DBFRecord {
 	idFieldUpper := strings.ToUpper(idField)

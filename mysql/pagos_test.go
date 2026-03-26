@@ -76,34 +76,6 @@ func TestBuildKey(t *testing.T) {
 	}
 }
 
-func TestBuildKeyExpression(t *testing.T) {
-	tests := []struct {
-		name      string
-		matchKeys []string
-		expected  string
-	}{
-		{
-			name:      "single key",
-			matchKeys: []string{"id"},
-			expected:  "CONCAT_WS('|', COALESCE(CAST(ID AS CHAR), '_NULL_'))",
-		},
-		{
-			name:      "multiple keys",
-			matchKeys: []string{"serie", "nro_recibo"},
-			expected:  "CONCAT_WS('|', COALESCE(CAST(SERIE AS CHAR), '_NULL_'), COALESCE(CAST(NRO_RECIBO AS CHAR), '_NULL_'))",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := buildKeyExpression(tt.matchKeys)
-			if got != tt.expected {
-				t.Errorf("buildKeyExpression() = %q, want %q", got, tt.expected)
-			}
-		})
-	}
-}
-
 func TestFilterRecordToColumns(t *testing.T) {
 	tests := []struct {
 		name       string
