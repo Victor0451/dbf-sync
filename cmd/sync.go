@@ -186,7 +186,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		PrintInfo("Match keys: %v", matchKeys)
 
 		var upsertErrs []error
-		inserted, updated, upsertErrs = mysql.SyncTableUpsert(conn.DB(), syncDB, syncTable, records, matchKeys, syncDryRun)
+		inserted, updated, upsertErrs = mysql.SyncTableUpsert(conn.DB(), syncDB, syncTable, records, matchKeys, syncDryRun, func(s string) { fmt.Print(s) })
 		if len(upsertErrs) > 0 {
 			for _, e := range upsertErrs {
 				PrintError("Upsert error: %v", e)

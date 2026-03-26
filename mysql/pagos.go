@@ -16,8 +16,16 @@ import (
 //  2. Classify each DBF record: exists → UPDATE batch, new → INSERT batch
 //  3. Execute batch INSERTs (multi-row)
 //  4. Execute batch UPDATEs
-func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, matchKeys []string, dryRun bool) (inserted, updated int, errors []error) {
-	fmt.Printf("  [1/5] Getting MySQL columns for %s.%s...\n", dbName, tableName)
+//
+// progress is an optional callback for step messages. Pass nil to suppress output (e.g. from TUI).
+func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, matchKeys []string, dryRun bool, progress func(string)) (inserted, updated int, errors []error) {
+	logf := func(format string, args ...interface{}) {
+		if progress != nil {
+			progress(fmt.Sprintf(format, args...))
+		}
+	}
+
+	logf("  [1/5] Getting MySQL columns for %s.%s...\n", dbName, tableName)
 
 	// Step 1: Get MySQL columns to filter DBF fields
 	columns, err := getColumnsForTable(db, tableName)
@@ -30,7 +38,7 @@ func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.
 		columnsMap[strings.ToUpper(c)] = true
 	}
 
-	fmt.Printf("  [2/5] Loading existing keys from MySQL (this may take a moment)...\n")
+	logf("  [2/5] Loading existing keys from MySQL (this may take a moment)...\n")
 
 	// Step 2: Load ALL existing keys into a hash map
 	existingKeys, err := loadExistingKeys(db, dbName, tableName, matchKeys)
@@ -38,9 +46,9 @@ func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.
 		errors = append(errors, fmt.Errorf("failed to load existing keys: %w", err))
 		return
 	}
-	fmt.Printf("        Found %d existing records in MySQL\n", len(existingKeys))
+	logf("        Found %d existing records in MySQL\n", len(existingKeys))
 
-	fmt.Printf("  [3/5] Classifying %d DBF records...\n", len(records))
+	logf("  [3/5] Classifying %d DBF records...\n", len(records))
 
 	// Step 3: Classify records
 	var toInsert []dbf.DBFRecord
@@ -64,14 +72,14 @@ func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.
 		}
 	}
 
-	fmt.Printf("        To INSERT: %d | To UPDATE: %d\n", len(toInsert), len(toUpdate))
+	logf("        To INSERT: %d | To UPDATE: %d\n", len(toInsert), len(toUpdate))
 
 	if dryRun {
 		return len(toInsert), len(toUpdate), nil
 	}
 
 	// Step 4: Batch INSERT
-	fmt.Printf("  [4/5] Inserting %d new records...\n", len(toInsert))
+	logf("  [4/5] Inserting %d new records...\n", len(toInsert))
 	batchSize := 500
 	for i := 0; i < len(toInsert); i += batchSize {
 		end := i + batchSize
@@ -86,7 +94,7 @@ func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.
 	}
 
 	// Step 5: Batch UPDATE
-	fmt.Printf("  [5/5] Updating %d existing records...\n", len(toUpdate))
+	logf("  [5/5] Updating %d existing records...\n", len(toUpdate))
 	for i := 0; i < len(toUpdate); i += batchSize {
 		end := i + batchSize
 		if end > len(toUpdate) {
@@ -337,17 +345,25 @@ func getColumnsForTable(db *sql.DB, tableName string) ([]string, error) {
 }
 
 // SyncPagos is kept for backward compatibility - delegates to SyncTableUpsert
-func SyncPagos(db *sql.DB, dbName string, records []dbf.DBFRecord, matchKeys []string, dryRun bool) (inserted, updated int, errors []error) {
-	return SyncTableUpsert(db, dbName, "pagos", records, matchKeys, dryRun)
+func SyncPagos(db *sql.DB, dbName string, records []dbf.DBFRecord, matchKeys []string, dryRun bool, progress func(string)) (inserted, updated int, errors []error) {
+	return SyncTableUpsert(db, dbName, "pagos", records, matchKeys, dryRun, progress)
 }
 
 // UpdateCobradorByMonth updates only cobrador records for a specific month
-// Filters by SERIE in [2,22] AND DIA_EMI = first day of month
-func UpdateCobradorByMonth(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, month int, year int, dryRun bool) (updated int, errors []error) {
+// Filters by SERIE in [2,22] AND DIA_EMI = first day of month.
+//
+// progress is an optional callback for step messages. Pass nil to suppress output (e.g. from TUI).
+func UpdateCobradorByMonth(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, month int, year int, dryRun bool, progress func(string)) (updated int, errors []error) {
+	logf := func(format string, args ...interface{}) {
+		if progress != nil {
+			progress(fmt.Sprintf(format, args...))
+		}
+	}
+
 	// Build the target date for the first day of the month
 	targetDate := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC)
 
-	fmt.Printf("  [1/4] Filtering cobrador records for %s...\n", targetDate.Format("2006-01-02"))
+	logf("  [1/4] Filtering cobrador records for %s...\n", targetDate.Format("2006-01-02"))
 
 	// Filter DBF records: SERIE in [2, 22] AND DIA_EMI matches target date
 	var cobradorRecords []dbf.DBFRecord
@@ -368,17 +384,17 @@ func UpdateCobradorByMonth(db *sql.DB, dbName string, tableName string, records 
 		}
 	}
 
-	fmt.Printf("        Found %d cobrador records in DBF\n", len(cobradorRecords))
+	logf("        Found %d cobrador records in DBF\n", len(cobradorRecords))
 
 	if len(cobradorRecords) == 0 {
-		fmt.Printf("        No records to update\n")
+		logf("        No records to update\n")
 		return 0, nil
 	}
 
 	// Get match keys from table config (default to SERIE, NRO_RECIBO, DIA_EMI)
 	matchKeys := []string{"SERIE", "NRO_RECIBO", "DIA_EMI"}
 
-	fmt.Printf("  [2/4] Loading existing keys from MySQL...\n")
+	logf("  [2/4] Loading existing keys from MySQL...\n")
 
 	// Build WHERE clause: SERIE IN (2,22) AND DIA_EMI = target date
 	whereClause := fmt.Sprintf("SERIE IN (2,22) AND DIA_EMI = '%s'", targetDate.Format("2006-01-02"))
@@ -401,9 +417,9 @@ func UpdateCobradorByMonth(db *sql.DB, dbName string, tableName string, records 
 		}
 		existingKeys[key] = true
 	}
-	fmt.Printf("        Found %d existing cobrador records in MySQL\n", len(existingKeys))
+	logf("        Found %d existing cobrador records in MySQL\n", len(existingKeys))
 
-	fmt.Printf("  [3/4] Filtering records to update...\n")
+	logf("  [3/4] Filtering records to update...\n")
 
 	// Get MySQL columns
 	columns, err := getColumnsForTable(db, tableName)
@@ -431,13 +447,13 @@ func UpdateCobradorByMonth(db *sql.DB, dbName string, tableName string, records 
 		}
 	}
 
-	fmt.Printf("        Records to update: %d\n", len(toUpdate))
+	logf("        Records to update: %d\n", len(toUpdate))
 
 	if dryRun {
 		return len(toUpdate), nil
 	}
 
-	fmt.Printf("  [4/4] Updating %d records...\n", len(toUpdate))
+	logf("  [4/4] Updating %d records...\n", len(toUpdate))
 
 	// Perform batch update
 	tx, err := db.Begin()
@@ -464,18 +480,26 @@ func UpdateCobradorByMonth(db *sql.DB, dbName string, tableName string, records 
 		return
 	}
 
-	fmt.Printf("        Updated %d records\n", updated)
+	logf("        Updated %d records\n", updated)
 	return updated, errors
 }
 
 // ApplyPostRules applies post-insert/update rules to affected records.
 // It processes records in batches of 500 for efficiency.
-func ApplyPostRules(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, matchKeys []string, rules []config.PostRule) error {
+//
+// progress is an optional callback for step messages. Pass nil to suppress output (e.g. from TUI).
+func ApplyPostRules(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, matchKeys []string, rules []config.PostRule, progress func(string)) error {
 	if len(records) == 0 || len(rules) == 0 {
 		return nil
 	}
 
-	fmt.Printf("  [Post] Applying %d post-processing rules to %d records...\n", len(rules), len(records))
+	logf := func(format string, args ...interface{}) {
+		if progress != nil {
+			progress(fmt.Sprintf(format, args...))
+		}
+	}
+
+	logf("  [Post] Applying %d post-processing rules to %d records...\n", len(rules), len(records))
 
 	batchSize := 500
 	for i := 0; i < len(records); i += batchSize {
@@ -492,7 +516,7 @@ func ApplyPostRules(db *sql.DB, dbName string, tableName string, records []dbf.D
 		}
 	}
 
-	fmt.Printf("        Post-processing complete\n")
+	logf("        Post-processing complete\n")
 	return nil
 }
 

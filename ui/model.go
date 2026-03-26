@@ -717,22 +717,22 @@ func (m *AppModel) runSync() tea.Cmd {
 
 			// Apply post-insert rules
 			if tableConfig != nil && len(tableConfig.PostInsert) > 0 && inserted > 0 {
-				mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, filteredRecords, matchKeys, tableConfig.PostInsert)
+				mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, filteredRecords, matchKeys, tableConfig.PostInsert, nil)
 			}
 
 		case "cobrador":
-			updated, errors = mysql.UpdateCobradorByMonth(m.conn.DB(), m.db, m.table, records, m.month, m.year, false)
+			updated, errors = mysql.UpdateCobradorByMonth(m.conn.DB(), m.db, m.table, records, m.month, m.year, false, nil)
 
 		case "full":
-			inserted, updated, errors = mysql.SyncTableUpsert(m.conn.DB(), m.db, m.table, records, matchKeys, false)
+			inserted, updated, errors = mysql.SyncTableUpsert(m.conn.DB(), m.db, m.table, records, matchKeys, false, nil)
 
 			// Apply post rules
 			if tableConfig != nil {
 				if len(tableConfig.PostInsert) > 0 && inserted > 0 {
-					mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, records, matchKeys, tableConfig.PostInsert)
+					mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, records, matchKeys, tableConfig.PostInsert, nil)
 				}
 				if len(tableConfig.PostUpdate) > 0 && updated > 0 {
-					mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, records, matchKeys, tableConfig.PostUpdate)
+					mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, records, matchKeys, tableConfig.PostUpdate, nil)
 				}
 			}
 		}
