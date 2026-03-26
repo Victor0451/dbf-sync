@@ -96,7 +96,7 @@ func FormatSize(size int64) string {
 	if size < unit {
 		return "<1 KB"
 	}
-	sz := float64(size)
+	sz := float64(size) / unit
 	exp := 0
 	for sz >= unit && exp < len(units)-1 {
 		sz /= unit
