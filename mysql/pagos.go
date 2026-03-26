@@ -3,6 +3,7 @@ package mysql
 import (
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -93,17 +94,9 @@ func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.
 		}
 	}
 
-	// Step 5: Batch UPDATE
-	logf("  [5/5] Updating %d existing records...\n", len(toUpdate))
-	for i := 0; i < len(toUpdate); i += batchSize {
-		end := i + batchSize
-		if end > len(toUpdate) {
-			end = len(toUpdate)
-		}
-		batchUpdated, batchErrs := batchUpdate(db, dbName, tableName, toUpdate[i:end], matchKeys)
-		updated += batchUpdated
-		errors = append(errors, batchErrs...)
-	}
+	// Step 5: Bulk UPDATE via temp table + JOIN (single SQL operation)
+	logf("  [5/5] Updating %d existing records via JOIN...\n", len(toUpdate))
+	updated, errors = bulkUpdateJoin(db, dbName, tableName, toUpdate, matchKeys, logf)
 
 	return
 }
@@ -120,7 +113,7 @@ func loadExistingKeys(db *sql.DB, dbName string, tableName string, matchKeys []s
 	}
 	defer rows.Close()
 
-	keys := make(map[string]bool, 700000) // Pre-allocate for performance
+	keys := make(map[string]bool)
 	for rows.Next() {
 		var key string
 		if err := rows.Scan(&key); err != nil {
@@ -226,36 +219,139 @@ func batchInsert(db *sql.DB, dbName string, tableName string, records []dbf.DBFR
 	return tx.Commit()
 }
 
-// batchUpdate performs batch UPDATEs within a single transaction.
-// If any record fails, the entire batch is rolled back and 0 is returned —
-// the counter must reflect reality: all-or-nothing per batch.
-func batchUpdate(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, matchKeys []string) (int, []error) {
+// bulkUpdateJoin performs all UPDATEs in a single SQL operation using a temp table.
+// Strategy:
+//  1. CREATE TEMPORARY TABLE with same columns as target (no indexes = fast INSERT)
+//  2. Batch INSERT all records into the temp table
+//  3. Single UPDATE main JOIN temp ON match_keys SET non-key columns
+//  4. DROP temp table
+//
+// For 200K updates this reduces ~200K statements to ~201 (200 batch INSERTs + 1 UPDATE JOIN).
+func bulkUpdateJoin(db *sql.DB, dbName, tableName string, records []dbf.DBFRecord, matchKeys []string, logf func(string, ...interface{})) (int, []error) {
 	if len(records) == 0 {
 		return 0, nil
 	}
 
+	const tmpTable = "_dbfsync_upd"
+	const insertBatch = 1000
+
 	tx, err := db.Begin()
 	if err != nil {
-		return 0, []error{fmt.Errorf("failed to begin transaction: %w", err)}
+		return 0, []error{fmt.Errorf("begin transaction: %w", err)}
 	}
 
-	var errors []error
-	for _, record := range records {
-		if err := updateRecord(tx, tableName, record, matchKeys, record, dbName); err != nil {
-			errors = append(errors, err)
+	// Drop any leftover temp table and create fresh one without indexes
+	tx.Exec("DROP TEMPORARY TABLE IF EXISTS " + tmpTable)
+	_, err = tx.Exec(fmt.Sprintf(
+		"CREATE TEMPORARY TABLE %s AS SELECT * FROM %s.%s WHERE 1=0",
+		tmpTable, dbName, tableName,
+	))
+	if err != nil {
+		tx.Rollback()
+		return 0, []error{fmt.Errorf("create temp table: %w", err)}
+	}
+
+	// Stable column order (maps are unordered in Go)
+	firstRecord := records[0]
+	columns := make([]string, 0, len(firstRecord))
+	for col := range firstRecord {
+		columns = append(columns, col)
+	}
+	sort.Strings(columns)
+
+	// Batch INSERT all records into temp table
+	logf("  [upd 1/2] Loading %d records into temp table (%d batches)...\n",
+		len(records), (len(records)+insertBatch-1)/insertBatch)
+
+	for i := 0; i < len(records); i += insertBatch {
+		end := i + insertBatch
+		if end > len(records) {
+			end = len(records)
+		}
+		if err := batchInsertTx(tx, tmpTable, records[i:end], columns); err != nil {
+			tx.Rollback()
+			return 0, []error{fmt.Errorf("temp insert at %d: %w", i, err)}
 		}
 	}
 
-	if len(errors) > 0 {
-		tx.Rollback()
-		return 0, errors
+	// Build ON clause: t.KEY1 = u.KEY1 AND t.KEY2 = u.KEY2 ...
+	onParts := make([]string, len(matchKeys))
+	for i, k := range matchKeys {
+		onParts[i] = fmt.Sprintf("t.%s = u.%s", k, k)
 	}
+
+	// Build SET clause: only non-key columns
+	matchKeySet := make(map[string]bool, len(matchKeys))
+	for _, k := range matchKeys {
+		matchKeySet[strings.ToUpper(k)] = true
+	}
+	setParts := make([]string, 0, len(columns))
+	for _, col := range columns {
+		if !matchKeySet[strings.ToUpper(col)] {
+			setParts = append(setParts, fmt.Sprintf("t.%s = u.%s", col, col))
+		}
+	}
+
+	if len(setParts) == 0 {
+		// Nothing to update (records only contain key columns)
+		tx.Exec("DROP TEMPORARY TABLE IF EXISTS " + tmpTable)
+		tx.Rollback()
+		return len(records), nil
+	}
+
+	updateQuery := fmt.Sprintf(
+		"UPDATE %s.%s t JOIN %s u ON %s SET %s",
+		dbName, tableName, tmpTable,
+		strings.Join(onParts, " AND "),
+		strings.Join(setParts, ", "),
+	)
+
+	logf("  [upd 2/2] Applying UPDATE JOIN...\n")
+	result, err := tx.Exec(updateQuery)
+	if err != nil {
+		tx.Rollback()
+		return 0, []error{fmt.Errorf("update join: %w", err)}
+	}
+
+	tx.Exec("DROP TEMPORARY TABLE IF EXISTS " + tmpTable)
 
 	if err := tx.Commit(); err != nil {
-		return 0, []error{fmt.Errorf("failed to commit: %w", err)}
+		return 0, []error{fmt.Errorf("commit: %w", err)}
 	}
 
-	return len(records), nil
+	affected, _ := result.RowsAffected()
+	return int(affected), nil
+}
+
+// batchInsertTx inserts a batch of records into a table within an existing transaction.
+// columns must be in stable order — all records must have these exact keys.
+func batchInsertTx(tx *sql.Tx, tableName string, records []dbf.DBFRecord, columns []string) error {
+	if len(records) == 0 {
+		return nil
+	}
+
+	placeholder := "(" + strings.Repeat("?,", len(columns)-1) + "?)"
+	allPlaceholders := make([]string, len(records))
+	for i := range records {
+		allPlaceholders[i] = placeholder
+	}
+
+	args := make([]interface{}, 0, len(records)*len(columns))
+	for _, rec := range records {
+		for _, col := range columns {
+			args = append(args, rec[col])
+		}
+	}
+
+	query := fmt.Sprintf(
+		"INSERT INTO %s (%s) VALUES %s",
+		tableName,
+		strings.Join(columns, ", "),
+		strings.Join(allPlaceholders, ", "),
+	)
+
+	_, err := tx.Exec(query, args...)
+	return err
 }
 
 // filterRecordToColumns filters DBF record to only include columns that exist in MySQL
@@ -269,53 +365,6 @@ func filterRecordToColumns(record dbf.DBFRecord, columnsMap map[string]bool) dbf
 	return filtered
 }
 
-// updateRecord updates a single record using match keys in WHERE clause
-func updateRecord(tx *sql.Tx, table string, record dbf.DBFRecord, matchKeys []string, originalRecord dbf.DBFRecord, dbName string) error {
-	if len(record) == 0 {
-		return fmt.Errorf("no fields to update")
-	}
-
-	// Build SET clause from non-key columns
-	setParts := make([]string, 0)
-	args := make([]interface{}, 0)
-
-	for col, val := range record {
-		isKey := false
-		for _, key := range matchKeys {
-			if strings.EqualFold(col, key) {
-				isKey = true
-				break
-			}
-		}
-		if !isKey {
-			setParts = append(setParts, fmt.Sprintf("%s = ?", col))
-			args = append(args, val)
-		}
-	}
-
-	if len(setParts) == 0 {
-		return nil
-	}
-
-	// Add WHERE clause
-	whereParts := make([]string, len(matchKeys))
-	for i, key := range matchKeys {
-		whereParts[i] = fmt.Sprintf("%s = ?", key)
-		keyUpper := strings.ToUpper(key)
-		args = append(args, originalRecord[keyUpper])
-	}
-
-	query := fmt.Sprintf(
-		"UPDATE %s.%s SET %s WHERE %s",
-		dbName,
-		table,
-		strings.Join(setParts, ", "),
-		strings.Join(whereParts, " AND "),
-	)
-
-	_, err := tx.Exec(query, args...)
-	return err
-}
 
 // getColumnsForTable retrieves column names from INFORMATION_SCHEMA
 func getColumnsForTable(db *sql.DB, tableName string) ([]string, error) {
@@ -453,34 +502,11 @@ func UpdateCobradorByMonth(db *sql.DB, dbName string, tableName string, records 
 		return len(toUpdate), nil
 	}
 
-	logf("  [4/4] Updating %d records...\n", len(toUpdate))
-
-	// Perform batch update
-	tx, err := db.Begin()
-	if err != nil {
-		errors = append(errors, fmt.Errorf("failed to begin transaction: %w", err))
-		return
+	logf("  [4/4] Updating %d cobrador records via JOIN...\n", len(toUpdate))
+	updated, errors = bulkUpdateJoin(db, dbName, tableName, toUpdate, matchKeys, logf)
+	if len(errors) == 0 {
+		logf("        Updated %d records\n", updated)
 	}
-
-	for _, record := range toUpdate {
-		if err := updateRecord(tx, tableName, record, matchKeys, record, dbName); err != nil {
-			errors = append(errors, err)
-			continue
-		}
-		updated++
-	}
-
-	if len(errors) > 0 {
-		tx.Rollback()
-		return updated, errors
-	}
-
-	if err := tx.Commit(); err != nil {
-		errors = append(errors, fmt.Errorf("failed to commit: %w", err))
-		return
-	}
-
-	logf("        Updated %d records\n", updated)
 	return updated, errors
 }
 
