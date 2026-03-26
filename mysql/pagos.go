@@ -95,10 +95,14 @@ func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.
 }
 
 // loadExistingKeys loads all composite key values from MySQL into a hash map.
+// Scans raw columns (no CONCAT_WS) so MySQL can use a covering index on matchKeys.
 // For 700K records this is ~14MB in memory — totally fine.
 func loadExistingKeys(db *sql.DB, dbName string, tableName string, matchKeys []string) (map[string]bool, error) {
-	keyExpr := buildKeyExpression(matchKeys)
-	query := fmt.Sprintf("SELECT %s FROM %s.%s", keyExpr, dbName, tableName)
+	upperKeys := make([]string, len(matchKeys))
+	for i, k := range matchKeys {
+		upperKeys[i] = strings.ToUpper(k)
+	}
+	query := fmt.Sprintf("SELECT %s FROM %s.%s", strings.Join(upperKeys, ", "), dbName, tableName)
 
 	rows, err := db.Query(query)
 	if err != nil {
@@ -106,13 +110,27 @@ func loadExistingKeys(db *sql.DB, dbName string, tableName string, matchKeys []s
 	}
 	defer rows.Close()
 
+	n := len(matchKeys)
+	scanVals := make([]sql.NullString, n)
+	scanPtrs := make([]interface{}, n)
+	for i := range scanVals {
+		scanPtrs[i] = &scanVals[i]
+	}
+	parts := make([]string, n)
 	keys := make(map[string]bool)
+
 	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
+		if err := rows.Scan(scanPtrs...); err != nil {
 			return nil, fmt.Errorf("failed to scan key: %w", err)
 		}
-		keys[key] = true
+		for i, v := range scanVals {
+			if v.Valid {
+				parts[i] = v.String
+			} else {
+				parts[i] = "_NULL_"
+			}
+		}
+		keys[strings.Join(parts, "|")] = true
 	}
 
 	return keys, rows.Err()
@@ -271,12 +289,16 @@ func bulkUpdateJoin(db *sql.DB, dbName, tableName string, records []dbf.DBFRecor
 	}
 
 	const tmpTable = "_dbfsync_upd"
-	const insertBatch = 1000
+	const insertBatch = 5000
 
 	tx, err := db.Begin()
 	if err != nil {
 		return 0, []error{fmt.Errorf("begin transaction: %w", err)}
 	}
+
+	// Reduce per-row overhead during bulk inserts into temp table
+	tx.Exec("SET SESSION unique_checks=0")
+	tx.Exec("SET SESSION foreign_key_checks=0")
 
 	// Drop any leftover temp table and create fresh one without indexes
 	tx.Exec("DROP TEMPORARY TABLE IF EXISTS " + tmpTable)
@@ -310,6 +332,18 @@ func bulkUpdateJoin(db *sql.DB, dbName, tableName string, records []dbf.DBFRecor
 			tx.Rollback()
 			return 0, []error{fmt.Errorf("temp insert at %d: %w", i, err)}
 		}
+	}
+
+	// Restore session vars before the JOIN
+	tx.Exec("SET SESSION unique_checks=1")
+	tx.Exec("SET SESSION foreign_key_checks=1")
+
+	// Add index on match key columns — critical for O(N log N) UPDATE JOIN
+	// Without this, MySQL does a full temp table scan per row in the main table → O(N²)
+	idxCols := strings.Join(matchKeys, ", ")
+	if _, err := tx.Exec("ALTER TABLE " + tmpTable + " ADD INDEX idx_jk (" + idxCols + ")"); err != nil {
+		// Non-fatal: log and continue — the JOIN will still work, just slower
+		logf("  [warn] No se pudo agregar indice a temp table: %v\n", err)
 	}
 
 	// Build ON clause: t.KEY1 = u.KEY1 AND t.KEY2 = u.KEY2 ...
