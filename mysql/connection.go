@@ -4,11 +4,24 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"dbf-sync/config"
 )
+
+var validIdentifier = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+
+// ValidateIdentifier returns an error if name is not a safe SQL identifier.
+// SQL identifiers (table names, column names, database names) cannot use
+// parameterized queries, so we validate them before interpolating.
+func ValidateIdentifier(name string) error {
+	if !validIdentifier.MatchString(name) {
+		return fmt.Errorf("invalid identifier %q: only letters, digits and underscores are allowed", name)
+	}
+	return nil
+}
 
 // MySQLConnection wraps a database connection
 type MySQLConnection struct {
@@ -66,6 +79,13 @@ func (m *MySQLConnection) DB() *sql.DB {
 
 // GetLastRecordID returns the maximum value of the ID field
 func (m *MySQLConnection) GetLastRecordID(table, idField string) (int64, error) {
+	if err := ValidateIdentifier(table); err != nil {
+		return 0, err
+	}
+	if err := ValidateIdentifier(idField); err != nil {
+		return 0, err
+	}
+
 	query := fmt.Sprintf("SELECT COALESCE(MAX(%s), 0) FROM %s", idField, table)
 
 	var maxID int64
@@ -106,6 +126,10 @@ func (m *MySQLConnection) GetColumnNames(table string) ([]string, error) {
 
 // GetRecordCount returns the number of records in a table
 func (m *MySQLConnection) GetRecordCount(table string) (int64, error) {
+	if err := ValidateIdentifier(table); err != nil {
+		return 0, err
+	}
+
 	query := fmt.Sprintf("SELECT COUNT(*) FROM %s", table)
 
 	var count int64

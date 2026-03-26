@@ -1,0 +1,10 @@
+# Config with credentials — never commit
+config/config.yaml
+
+# Build output
+dbf-sync
+dbf-sync.exe
+
+# OS
+.DS_Store
+Thumbs.db

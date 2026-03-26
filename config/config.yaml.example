@@ -1,0 +1,69 @@
+databases:
+  wercho:
+    host: 192.168.1.102
+    port: 3307
+    user: vlongo
+    password: "YOUR_PASSWORD_HERE"
+    database: wercho
+
+  sanvalentin:
+    host: 192.168.1.102
+    port: 3307
+    user: vlongo
+    password: "YOUR_PASSWORD_HERE"
+    database: sanvalentin
+
+settings:
+  dbf_directories:
+    wercho: /home/vlongo/VB/BASES/WERCHOW/
+    sanvalentin: /home/vlongo/VB/BASES/MUTUAL/
+
+# Alternatively, use environment variables (override all databases):
+#   DBF_SYNC_MYSQL_HOST
+#   DBF_SYNC_MYSQL_PORT
+#   DBF_SYNC_MYSQL_USER
+#   DBF_SYNC_MYSQL_PASSWORD
+
+tables:
+  pagos:
+    mode: upsert
+    match_keys: [SERIE, NRO_RECIBO, DIA_EMI]
+    cobrador:
+      serie: [2, 22]
+      movim_pending: "N"
+      movim_settled: "P"
+      movim_cancelled: "A"
+      dia_emi_field: DIA_EMI
+
+  pago_bco:
+    mode: append
+    match_keys: [id]
+
+  maestro:
+    mode: append
+    match_keys: [CONTRATO]
+    post_insert:
+      - set: {ESTADO: 1}
+        description: "Forzar ESTADO=1 para nuevos registros"
+
+  adherent:
+    mode: upsert
+    match_keys: [CONTRATO, NRO_DOC]
+    post_insert:
+      - set: {ESTADO: 1}
+        when: "BAJA IS NULL"
+      - set: {ESTADO: 0}
+        when: "BAJA IS NOT NULL"
+    post_update:
+      - set: {ESTADO: 1}
+        when: "BAJA IS NULL"
+      - set: {ESTADO: 0}
+        when: "BAJA IS NOT NULL"
+
+  cuo_fija:
+    mode: append
+    match_keys: [CONTRATO]
+
+  bajas:
+    mode: append
+    match_keys: [CONTRATO]

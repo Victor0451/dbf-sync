@@ -783,6 +783,9 @@ func (i listItem) Description() string { return "" }
 
 // getTables gets tables from a database
 func getTables(db *sql.DB, database string) ([]string, error) {
+	if err := mysql.ValidateIdentifier(database); err != nil {
+		return nil, err
+	}
 	query := fmt.Sprintf("SHOW TABLES FROM %s", database)
 	rows, err := db.Query(query)
 	if err != nil {
