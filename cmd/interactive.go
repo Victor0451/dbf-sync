@@ -12,7 +12,7 @@ var interactiveCmd = &cobra.Command{
 	Short: "Modo interactivo con menús",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		configPath := GetConfigPath(cmd)
-		model := ui.NewAppModel(configPath)
+		model := ui.NewAppModel(configPath, appVersion)
 		p := tea.NewProgram(model)
 		_, err := p.Run()
 		return err

@@ -31,7 +31,7 @@ Powered by VML PROGRAMMING 🐉`, appVersion, appCommit, appBuildDate),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// If no subcommand, launch interactive mode
 		configPath := GetConfigPath(cmd)
-		model := ui.NewAppModel(configPath)
+		model := ui.NewAppModel(configPath, appVersion)
 		p := tea.NewProgram(model)
 		_, err := p.Run()
 		return err

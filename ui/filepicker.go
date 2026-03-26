@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,16 +91,21 @@ func GetWindowsRoot() string {
 
 // FormatSize formats file size in human-readable format
 func FormatSize(size int64) string {
+	units := []string{"KB", "MB", "GB", "TB"}
 	const unit = 1024
 	if size < unit {
 		return "<1 KB"
 	}
-	div, exp := int64(unit), 0
-	for n := size / unit; n >= unit; n /= unit {
-		div *= unit
+	sz := float64(size)
+	exp := 0
+	for sz >= unit && exp < len(units)-1 {
+		sz /= unit
 		exp++
 	}
-	return string(rune('K'+exp)) + "B"
+	if sz == float64(int64(sz)) {
+		return fmt.Sprintf("%d %s", int64(sz), units[exp])
+	}
+	return fmt.Sprintf("%.1f %s", sz, units[exp])
 }
 
 // ValidPath checks if a path exists and is accessible

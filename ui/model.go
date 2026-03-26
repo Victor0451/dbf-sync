@@ -65,6 +65,7 @@ type AppModel struct {
 	prevState   AppState
 	config      *config.Config
 	configPath  string
+	version     string
 
 	// DB connection
 	db       string
@@ -101,7 +102,7 @@ type AppModel struct {
 }
 
 // NewAppModel creates a new app model
-func NewAppModel(configPath string) *AppModel {
+func NewAppModel(configPath, version string) *AppModel {
 	// Load config
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
@@ -147,11 +148,16 @@ func NewAppModel(configPath string) *AppModel {
 	textInputModel.Placeholder = "Ingresá la ruta..."
 	textInputModel.Prompt = "► "
 
+	if version == "" {
+		version = "dev"
+	}
+
 	return &AppModel{
 		state:       StateMainMenu,
 		prevState:   StateMainMenu,
 		config:      cfg,
 		configPath:  configPath,
+		version:     version,
 		currentDir:  defaultDir,
 		dirEntries:  []DirEntry{},
 		cursor:      0,
@@ -163,9 +169,14 @@ func NewAppModel(configPath string) *AppModel {
 	}
 }
 
+// spinnerTickCmd wraps spinner.Tick() as a tea.Cmd (v2 returns tea.Msg, not tea.Cmd)
+func (m *AppModel) spinnerTickCmd() tea.Cmd {
+	return func() tea.Msg { return m.spinner.Tick() }
+}
+
 // Init initializes the model
 func (m *AppModel) Init() tea.Cmd {
-	return nil
+	return m.spinnerTickCmd()
 }
 
 // Update handles messages
@@ -205,7 +216,30 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleKey handles keyboard input
 func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Block all keyboard input while a sync operation is running
+	if m.state == StateProcessing {
+		return m, nil
+	}
+
 	switch msg.String() {
+	case "s", "S":
+		switch m.state {
+		case StateConfirm:
+			return m.handleConfirm()
+		case StateInstalling:
+			m.state = StateInstallDone
+		}
+		return m, nil
+
+	case "n", "N":
+		switch m.state {
+		case StateConfirm:
+			return m.goBack()
+		case StateInstalling:
+			m.state = StateMainMenu
+		}
+		return m, nil
+
 	case "q", "Q":
 		// Quit - confirm if in middle of action
 		if m.state != StateMainMenu && m.state != StateQuit {
@@ -584,12 +618,11 @@ func (m *AppModel) handleInputYear() (tea.Model, tea.Cmd) {
 
 // handleConfirm handles confirmation
 func (m *AppModel) handleConfirm() (tea.Model, tea.Cmd) {
-	// Start processing
 	m.loading = true
 	m.loadingMsg = "Sincronizando..."
 	m.state = StateProcessing
 
-	return m, m.runSync()
+	return m, tea.Batch(m.runSync(), m.spinnerTickCmd())
 }
 
 // loadDatabases loads databases into the list

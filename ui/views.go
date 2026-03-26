@@ -77,14 +77,14 @@ func (m *AppModel) viewMainMenu() string {
      ██████╔╝██║  ██║██║         ███████║   ██║   ██║ ╚████║╚██████╔╝██║  ██║███████╗
      ╚═════╝ ╚═╝  ╚═╝╚═╝         ╚══════╝   ╚═╝   ╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝
 
-                      DBF Sync v0.2.0 — Modo Interactivo
+                      DBF Sync %s — Modo Interactivo
 
-                        Powered by VML PROGRAMMING 🐉
+                        Powered by VML PROGRAMMING
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  ¿Qué querés hacer?
-`))
+  Que queres hacer?
+`, m.version))
 
 	menuView := m.list.View()
 	
@@ -105,8 +105,7 @@ func (m *AppModel) viewSelectDB() string {
 
 	menuView := m.list.View()
 
-	footer := HintStyle.Width(m.width - 4).Render(`
-  ► Base de datos: %s`, m.db)
+	footer := HintStyle.Width(m.width - 4).Render(fmt.Sprintf("\n  ► Base de datos: %s", m.db))
 
 	return header + "\n" + menuView + "\n" + footer
 }
@@ -314,18 +313,30 @@ func (m *AppModel) viewConfirm() string {
 
 // viewProcessing shows processing state
 func (m *AppModel) viewProcessing() string {
-	header := TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
+	period := ""
+	if m.action == "cobrador" && m.month > 0 {
+		period = fmt.Sprintf("\n  Periodo:        %02d/%d", m.month, m.year)
+	}
+
+	return TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  Sincronizando...
+  %s  Sincronizando...
 
-  %s
+  Base de datos:  %s
+  Tabla:          %s
+  Accion:         %s%s
 
-  Por favor esperá...
+  Este proceso puede tardar varios segundos.
 
-`, m.spinner.View()))
-
-	return header
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+`,
+		m.spinner.View(),
+		m.db,
+		m.table,
+		getActionLabel(m.action),
+		period,
+	))
 }
 
 // viewSummary shows sync results
@@ -335,44 +346,54 @@ func (m *AppModel) viewSummary() string {
 	}
 
 	result := m.result
-	durationStr := formatDuration(result.Duration)
-	beforeStr := formatNumber(result.RecordsBefore)
-	afterStr := formatNumber(result.RecordsAfter)
 
-	var b strings.Builder
-
-	b.WriteString(BoxTitleStyle.Width(m.width - 4).Render(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  RESUMEN DE SYNCRONIZACIÓN
-
-  ► Base de datos: ` + result.Database + "\n"))
-	b.WriteString("  ► Tabla: " + result.Table + "\n")
-	b.WriteString("  ► Acción: " + getActionLabel(result.Action) + "\n")
-	if result.Period != "" {
-		b.WriteString("  ► Período: " + result.Period + "\n")
+	errColor := lipgloss.NewStyle().Foreground(Primary)
+	if result.Errors > 0 {
+		errColor = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
 	}
 
-	b.WriteString("\n" + BoxStyle.Width(m.width - 8).Render(fmt.Sprintf(`
-  ╔══════════════════════════════════════════════════════════╗
-  ║                    ANTES / DESPUÉS                      ║
-  ╠══════════════════════════════════════════════════════════╣
-  ║  📊 Registros antes:   %-32s ║
-  ║  ✅ Insertados:       %-32d ║
-  ║  🔄 Actualizados:      %-32d ║
-  ║  ⏭️  Omitidos:         %-32d ║
-  ║  ❌ Errores:           %-32d ║
-  ║  📊 Registros después: %-32s ║
-  ╠══════════════════════════════════════════════════════════╣
-  ║  ⏱️  Duración:         %-32s ║
-  ╚══════════════════════════════════════════════════════════╝
-`, beforeStr, result.Inserted, result.Updated, result.Skipped, result.Errors, afterStr, durationStr)))
+	period := ""
+	if result.Period != "" {
+		period = fmt.Sprintf("\n  Periodo:       %s", result.Period)
+	}
 
-	b.WriteString(HintStyle.Width(m.width - 4).Render(`
+	inner := fmt.Sprintf(
+		"  RESUMEN DE SINCRONIZACION\n\n"+
+			"  Base de datos: %s\n"+
+			"  Tabla:         %s\n"+
+			"  Accion:        %s%s\n\n"+
+			"  ─────────────────────────────\n"+
+			"  Antes:         %s\n"+
+			"  Insertados:    +%s\n"+
+			"  Actualizados:  %s\n"+
+			"  Omitidos:      %s\n"+
+			"  Errores:       %s\n"+
+			"  Despues:       %s\n"+
+			"  ─────────────────────────────\n"+
+			"  Duracion:      %s\n",
+		result.Database,
+		result.Table,
+		getActionLabel(result.Action),
+		period,
+		formatNumber(result.RecordsBefore),
+		formatNumber(result.Inserted),
+		formatNumber(result.Updated),
+		formatNumber(result.Skipped),
+		errColor.Render(formatNumber(result.Errors)),
+		formatNumber(result.RecordsAfter),
+		formatDuration(result.Duration),
+	)
 
-  Presioná cualquier tecla para continuar...`))
+	boxWidth := m.width - 8
+	if boxWidth < 40 {
+		boxWidth = 40
+	}
 
-	return b.String()
+	box := BoxStyle.Width(boxWidth).Render(inner)
+
+	hint := HintStyle.Width(m.width - 4).Render("\n  Presiona cualquier tecla para continuar...")
+
+	return "\n" + box + "\n" + hint
 }
 
 // viewStatus shows connection status
