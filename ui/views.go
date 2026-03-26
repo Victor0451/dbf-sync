@@ -11,6 +11,49 @@ import (
 	"dbf-sync/config"
 )
 
+// ── Layout helpers ────────────────────────────────────────────────────────────
+
+// sep returns a full-width separator line using the current terminal width.
+func (m *AppModel) sep() string {
+	w := m.width - 4
+	if w < 10 {
+		w = 10
+	}
+	return strings.Repeat("─", w)
+}
+
+// pageTitle renders the top section: separator, title, optional breadcrumbs, nav hint.
+func (m *AppModel) pageTitle(title string, crumbs []string, hint string) string {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(Primary)
+	hintStyle := lipgloss.NewStyle().Foreground(Muted).Italic(true)
+	crumbStyle := lipgloss.NewStyle().Foreground(Accent)
+
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(titleStyle.Render("  "+title) + "\n")
+	if len(crumbs) > 0 {
+		b.WriteString("\n")
+		for _, c := range crumbs {
+			b.WriteString(crumbStyle.Render("  › ") + c + "\n")
+		}
+	}
+	b.WriteString("\n" + hintStyle.Render("  "+hint) + "\n")
+	b.WriteString(m.sep() + "\n")
+	return b.String()
+}
+
+// footer renders a bottom hint line.
+func (m *AppModel) footer(hint string) string {
+	return "\n" + HintStyle.Width(m.width-4).Render("  "+hint)
+}
+
+// errLine renders an inline error message.
+func errLine(msg string) string {
+	return ErrorStyle.Render("  " + msg) + "\n"
+}
+
+// ── View dispatcher ───────────────────────────────────────────────────────────
+
 // View returns the appropriate view based on the current state
 func (m *AppModel) View() tea.View {
 	if !m.ready {
@@ -63,293 +106,205 @@ func (m *AppModel) View() tea.View {
 	return v
 }
 
-// viewMainMenu shows the main menu
+// ── Individual views ──────────────────────────────────────────────────────────
+
 func (m *AppModel) viewMainMenu() string {
 	if m.list.Items() == nil || len(m.list.Items()) == 0 {
 		m.loadMainMenu()
 	}
 
-	header := TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
-     ██████╗ ██████╗ ███████╗    ███████╗██╗   ██╗███╗   ██╗ ██████╗ ██████╗ ███████╗
-     ██╔══██╗██╔══██╗██╔════╝    ██╔════╝╚██╗ ██╔╝████╗  ██║██╔════╝ ██╔══██╗██╔════╝
-     ██║  ██║██████╔╝█████╗      ███████╗ ╚████╔╝ ██╔██╗ ██║██║  ███╗██████╔╝█████╗
-     ██║  ██║██╔══██╗██╔══╝      ╚════██║  ╚██╔╝  ██║╚██╗██║██║   ██║██╔══██╗██╔══╝
-     ██████╔╝██║  ██║██║         ███████║   ██║   ██║ ╚████║╚██████╔╝██║  ██║███████╗
-     ╚═════╝ ╚═╝  ╚═╝╚═╝         ╚══════╝   ╚═╝   ╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝
+	banner := TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
+  ██████╗ ██████╗ ███████╗    ███████╗██╗   ██╗███╗   ██╗ ██████╗
+  ██╔══██╗██╔══██╗██╔════╝    ██╔════╝╚██╗ ██╔╝████╗  ██║██╔════╝
+  ██║  ██║██████╔╝█████╗      ███████╗ ╚████╔╝ ██╔██╗ ██║██║
+  ██║  ██║██╔══██╗██╔══╝      ╚════██║  ╚██╔╝  ██║╚██╗██║██║
+  ██████╔╝██║  ██║██║         ███████║   ██║   ██║ ╚████║╚██████╔╝
+  ╚═════╝ ╚═╝  ╚═╝╚═╝         ╚══════╝   ╚═╝   ╚═╝  ╚═══╝ ╚═════╝
 
-                      DBF Sync %s — Modo Interactivo
-
-                        Powered by VML PROGRAMMING
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Que queres hacer?
+  DBF Sync %s                      Powered by VML PROGRAMMING
 `, m.version))
 
-	menuView := m.list.View()
-	
-	footer := HintStyle.Width(m.width - 4).Render(`
-  ↑/↓ navegar · Enter confirmar · q salir`)
+	sep := lipgloss.NewStyle().Foreground(Muted).Render(m.sep())
+	hint := HintStyle.Render("  Que queres hacer?")
+	menu := m.list.View()
+	nav := HintStyle.Render("  ↑/↓  navegar    Enter  confirmar    q  salir")
 
-	return header + "\n" + menuView + "\n" + footer
+	return banner + "\n" + sep + "\n" + hint + "\n\n" + menu + "\n" + nav
 }
 
-// viewSelectDB shows database selection
 func (m *AppModel) viewSelectDB() string {
-	header := TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Seleccionar Base de Datos
-
-  ↑/↓ navegar · Enter confirmar · Esc volver`))
-
-	menuView := m.list.View()
-
-	footer := HintStyle.Width(m.width - 4).Render(fmt.Sprintf("\n  ► Base de datos: %s", m.db))
-
-	return header + "\n" + menuView + "\n" + footer
+	header := m.pageTitle("Seleccionar Base de Datos", nil, "↑/↓  navegar    Enter  confirmar    Esc  volver")
+	return header + m.list.View()
 }
 
-// viewSelectTable shows table selection with loading state
 func (m *AppModel) viewSelectTable() string {
 	if m.loading {
-		header := TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Conectando a MySQL (%s)...
-
-  %s`, m.loadingMsg, m.spinner.View()))
-
-		return header
+		return m.pageTitle(fmt.Sprintf("Conectando a %s...", m.db), nil, "") +
+			"\n  " + m.spinner.View() + "  " + m.loadingMsg + "\n"
 	}
-
 	if m.err != nil {
-		header := ErrorStyle.Width(m.width - 4).Render(fmt.Sprintf(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Error: %v
-
-  Presioná cualquier tecla para continuar...`, m.err))
-
-		return header
+		return m.pageTitle("Error de conexion", nil, "Presiona cualquier tecla para volver...") +
+			errLine(m.err.Error())
 	}
-
-	header := TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Seleccionar Tabla (%s)
-
-  ↑/↓ navegar · Enter confirmar · Esc volver`, m.db))
-
-	menuView := m.list.View()
-
-	return header + "\n" + menuView
+	header := m.pageTitle(
+		fmt.Sprintf("Seleccionar Tabla  [%s]", m.db),
+		nil,
+		"↑/↓  navegar    Enter  confirmar    Esc  volver",
+	)
+	return header + m.list.View()
 }
 
-// viewSelectAction shows action selection
 func (m *AppModel) viewSelectAction() string {
-	header := TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Seleccionar Acción
-
-  ► Base de datos: %s
-  ► Tabla: %s
-
-  ↑/↓ navegar · Enter confirmar · Esc volver`, m.db, m.table))
-
-	menuView := m.list.View()
-
-	return header + "\n" + menuView
+	header := m.pageTitle(
+		"Seleccionar Accion",
+		[]string{
+			fmt.Sprintf("Base de datos: %s", m.db),
+			fmt.Sprintf("Tabla:         %s", m.table),
+		},
+		"↑/↓  navegar    Enter  confirmar    Esc  volver",
+	)
+	return header + m.list.View()
 }
 
-// viewBrowseFile shows the file browser
 func (m *AppModel) viewBrowseFile() string {
+	accentStyle := lipgloss.NewStyle().Foreground(Accent).Bold(true)
+	mutedStyle := lipgloss.NewStyle().Foreground(Muted)
+
+	header := m.pageTitle(
+		"Seleccionar Archivo .dbf",
+		[]string{
+			fmt.Sprintf("Base de datos: %s", m.db),
+			fmt.Sprintf("Tabla:         %s", m.table),
+			fmt.Sprintf("Accion:        %s", getActionLabel(m.action)),
+		},
+		"↑/↓  navegar    Enter  abrir    Backspace  subir    t  ruta manual    Esc  volver",
+	)
+
 	var b strings.Builder
-
-	b.WriteString(TitleStyle.Width(m.width - 4).Render(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Seleccionar Archivo .dbf
-
-  ► Base de datos: ` + m.db + "\n"))
-	b.WriteString("  ► Tabla: " + m.table + "\n")
-	b.WriteString("  ► Acción: " + getActionLabel(m.action) + "\n")
-		b.WriteString("\n  📁 " + m.currentDir + "\n")
-	b.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	b.WriteString(header)
+	b.WriteString(mutedStyle.Render("  " + m.currentDir) + "\n\n")
 
 	if len(m.dirEntries) == 0 {
 		b.WriteString(HintStyle.Render("  No hay archivos .dbf en este directorio\n"))
 	} else {
 		for i, entry := range m.dirEntries {
-			icon := "📄 "
+			icon := "  "
 			if entry.IsDir {
-				icon = "📁 "
-			}
-			
-			cursor := "  "
-			var nameStr string
-			if i == m.cursor {
-				cursor = "► "
-				nameStr = SelectedStyle.Render(entry.Name)
+				icon = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFA500")).Render("D ")
 			} else {
-				nameStr = entry.Name
+				icon = lipgloss.NewStyle().Foreground(Primary).Render("F ")
 			}
 
-			if entry.IsDir {
-				b.WriteString(fmt.Sprintf("  %s%s%s\n", cursor, icon, nameStr))
+			name := entry.Name
+			size := ""
+			if !entry.IsDir {
+				size = mutedStyle.Render("  " + FormatSize(entry.Size))
+			}
+
+			if i == m.cursor {
+				b.WriteString(accentStyle.Render("  ► ") + icon + accentStyle.Render(name) + size + "\n")
 			} else {
-				b.WriteString(fmt.Sprintf("  %s%s%s %s\n", cursor, icon, nameStr, MutedStyle(FormatSize(entry.Size))))
+				b.WriteString("    " + icon + name + size + "\n")
 			}
 		}
 	}
 
-	b.WriteString(HintStyle.Width(m.width - 4).Render(`
-  ↑/↓ navegar · Enter seleccionar · Backspace subir · t manual · Esc volver`))
-
 	return b.String()
 }
 
-// viewManualPath shows manual path input
 func (m *AppModel) viewManualPath() string {
-	header := TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Ingresar Ruta Manualmente
-
-  ► Base de datos: %s
-  ► Tabla: %s
-  ► Acción: %s
-
-`, m.db, m.table, getActionLabel(m.action)))
-
-	inputView := m.textInput.View()
-
-	footer := HintStyle.Width(m.width - 4).Render(`
-  Enter confirmar · Esc cancelar`)
-
-	return header + "\n" + inputView + "\n" + footer
+	header := m.pageTitle(
+		"Ingresar Ruta Manualmente",
+		[]string{
+			fmt.Sprintf("Base de datos: %s", m.db),
+			fmt.Sprintf("Tabla:         %s", m.table),
+		},
+		"Enter  confirmar    Esc  cancelar",
+	)
+	return header + "\n  Ruta: " + m.textInput.View() + "\n"
 }
 
-// viewInputMonth shows month input
 func (m *AppModel) viewInputMonth() string {
-	header := TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Ingresar Mes
-
-  ► Base de datos: %s
-  ► Tabla: %s
-  ► Archivo: %s
-  ► Acción: Actualizar cobradores
-
-`, m.db, m.table, m.dbfPath))
-
-	inputView := m.textInput.View()
-
-	footer := HintStyle.Width(m.width - 4).Render(`
-  Ingresá el mes (1-12) · Enter confirmar · Esc volver`)
-
+	var errMsg string
 	if m.err != nil {
-		footer = ErrorStyle.Width(m.width - 4).Render(m.err.Error()) + "\n" + footer
+		errMsg = errLine(m.err.Error())
 	}
-
-	return header + "\n" + "  Mes: " + inputView + "\n\n" + footer
+	header := m.pageTitle(
+		"Actualizar Cobradores — Mes",
+		[]string{
+			fmt.Sprintf("Base de datos: %s", m.db),
+			fmt.Sprintf("Tabla:         %s", m.table),
+			fmt.Sprintf("Archivo:       %s", m.dbfPath),
+		},
+		"Ingresa el mes (1-12)    Enter  confirmar    Esc  volver",
+	)
+	return header + "\n  Mes: " + m.textInput.View() + "\n" + errMsg
 }
 
-// viewInputYear shows year input
 func (m *AppModel) viewInputYear() string {
-	header := TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Ingresar Año
-
-  ► Base de datos: %s
-  ► Tabla: %s
-  ► Archivo: %s
-  ► Mes: %d
-  ► Acción: Actualizar cobradores
-
-`, m.db, m.table, m.dbfPath, m.month))
-
-	inputView := m.textInput.View()
-
-	footer := HintStyle.Width(m.width - 4).Render(`
-  Ingresá el año (e.g. 2026) · Enter confirmar · Esc volver`)
-
+	var errMsg string
 	if m.err != nil {
-		footer = ErrorStyle.Width(m.width - 4).Render(m.err.Error()) + "\n" + footer
+		errMsg = errLine(m.err.Error())
 	}
-
-	return header + "\n" + "  Año: " + inputView + "\n\n" + footer
+	header := m.pageTitle(
+		"Actualizar Cobradores — Ano",
+		[]string{
+			fmt.Sprintf("Base de datos: %s", m.db),
+			fmt.Sprintf("Tabla:         %s", m.table),
+			fmt.Sprintf("Mes:           %02d", m.month),
+		},
+		"Ingresa el ano (ej: 2026)    Enter  confirmar    Esc  volver",
+	)
+	return header + "\n  Ano: " + m.textInput.View() + "\n" + errMsg
 }
 
-// viewConfirm shows confirmation dialog
 func (m *AppModel) viewConfirm() string {
-	period := ""
+	crumbs := []string{
+		fmt.Sprintf("Base de datos: %s", m.db),
+		fmt.Sprintf("Tabla:         %s", m.table),
+		fmt.Sprintf("Archivo:       %s", m.dbfPath),
+		fmt.Sprintf("Accion:        %s", getActionLabel(m.action)),
+	}
 	if m.action == "cobrador" {
-		period = fmt.Sprintf("  ► Período: %02d/%d\n", m.month, m.year)
+		crumbs = append(crumbs, fmt.Sprintf("Periodo:       %02d/%d", m.month, m.year))
 	}
 
-	header := TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Confirmar Sincronización
-
-  ► Base de datos: %s
-  ► Tabla: %s
-  ► Archivo: %s
-%s  ► Acción: %s
-
-  ¿Confirmar? (s/n)
-
-`, m.db, m.table, m.dbfPath, period, getActionLabel(m.action)))
-
-	footer := HintStyle.Width(m.width - 4).Render(`
-  s/Sí · n/No · Esc volver`)
-
-	return header + footer
+	header := m.pageTitle("Confirmar Sincronizacion", crumbs, "s  confirmar    n / Esc  cancelar")
+	return header + "\n" +
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#FFA500")).Bold(true).Render("  Confirmar? (s/n)") +
+		"\n"
 }
 
-// viewProcessing shows processing state
 func (m *AppModel) viewProcessing() string {
 	period := ""
 	if m.action == "cobrador" && m.month > 0 {
 		period = fmt.Sprintf("\n  Periodo:        %02d/%d", m.month, m.year)
 	}
 
-	return TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	spinnerStr := m.spinner.View()
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(Primary)
+	crumbStyle := lipgloss.NewStyle().Foreground(Accent)
 
-  %s  Sincronizando...
-
-  Base de datos:  %s
-  Tabla:          %s
-  Accion:         %s%s
-
-  Este proceso puede tardar varios segundos.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-`,
-		m.spinner.View(),
-		m.db,
-		m.table,
-		getActionLabel(m.action),
-		period,
-	))
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(titleStyle.Render(fmt.Sprintf("  %s  Sincronizando...", spinnerStr)) + "\n\n")
+	b.WriteString(crumbStyle.Render("  › ") + fmt.Sprintf("Base de datos:  %s\n", m.db))
+	b.WriteString(crumbStyle.Render("  › ") + fmt.Sprintf("Tabla:          %s\n", m.table))
+	b.WriteString(crumbStyle.Render("  › ") + fmt.Sprintf("Accion:         %s%s\n", getActionLabel(m.action), period))
+	b.WriteString("\n" + HintStyle.Render("  Este proceso puede tardar varios segundos.") + "\n")
+	b.WriteString(m.sep() + "\n")
+	return b.String()
 }
 
-// viewSummary shows sync results
 func (m *AppModel) viewSummary() string {
 	if m.result == nil {
 		return m.viewMainMenu()
 	}
 
 	result := m.result
-
-	errColor := lipgloss.NewStyle().Foreground(Primary)
+	errStyle := lipgloss.NewStyle().Foreground(Primary)
 	if result.Errors > 0 {
-		errColor = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
+		errStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
 	}
 
 	period := ""
@@ -362,25 +317,27 @@ func (m *AppModel) viewSummary() string {
 			"  Base de datos: %s\n"+
 			"  Tabla:         %s\n"+
 			"  Accion:        %s%s\n\n"+
-			"  ─────────────────────────────\n"+
+			"  %s\n"+
 			"  Antes:         %s\n"+
 			"  Insertados:    +%s\n"+
 			"  Actualizados:  %s\n"+
 			"  Omitidos:      %s\n"+
 			"  Errores:       %s\n"+
 			"  Despues:       %s\n"+
-			"  ─────────────────────────────\n"+
+			"  %s\n"+
 			"  Duracion:      %s\n",
 		result.Database,
 		result.Table,
 		getActionLabel(result.Action),
 		period,
+		strings.Repeat("─", 30),
 		formatNumber(result.RecordsBefore),
 		formatNumber(result.Inserted),
 		formatNumber(result.Updated),
 		formatNumber(result.Skipped),
-		errColor.Render(formatNumber(result.Errors)),
+		errStyle.Render(formatNumber(result.Errors)),
 		formatNumber(result.RecordsAfter),
+		strings.Repeat("─", 30),
 		formatDuration(result.Duration),
 	)
 
@@ -390,151 +347,114 @@ func (m *AppModel) viewSummary() string {
 	}
 
 	box := BoxStyle.Width(boxWidth).Render(inner)
-
 	hint := HintStyle.Width(m.width - 4).Render("\n  Presiona cualquier tecla para continuar...")
 
 	return "\n" + box + "\n" + hint
 }
 
-// viewStatus shows connection status with live ping results
 func (m *AppModel) viewStatus() string {
 	var b strings.Builder
-
-	b.WriteString(TitleStyle.Width(m.width-4).Render(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Estado de Conexiones
-
-`))
+	b.WriteString(m.pageTitle("Estado de Conexiones", nil, "Presiona cualquier tecla para volver..."))
 
 	if m.loading {
-		b.WriteString(fmt.Sprintf("  %s  Probando conexiones...\n", m.spinner.View()))
-	} else {
-		okStyle := lipgloss.NewStyle().Foreground(Primary).Bold(true)
-		failStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
-
-		for name, dbCfg := range m.config.Databases {
-			status := "..."
-			if m.statusResults != nil {
-				r := m.statusResults[name]
-				if r.ok {
-					status = okStyle.Render("OK")
-				} else {
-					msg := "FALLO"
-					if r.err != nil {
-						msg = "FALLO: " + r.err.Error()
-					}
-					status = failStyle.Render(msg)
-				}
-			}
-			b.WriteString(fmt.Sprintf("  %-14s  %s:%d / %s  →  %s\n",
-				name, dbCfg.Host, dbCfg.Port, dbCfg.Database, status))
-		}
+		b.WriteString(fmt.Sprintf("\n  %s  Probando conexiones...\n", m.spinner.View()))
+		return b.String()
 	}
 
-	b.WriteString(HintStyle.Width(m.width - 4).Render("\n  Presiona cualquier tecla para continuar..."))
+	okStyle := lipgloss.NewStyle().Foreground(Primary).Bold(true)
+	failStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
+
+	for name, dbCfg := range m.config.Databases {
+		status := HintStyle.Render("...")
+		if m.statusResults != nil {
+			r := m.statusResults[name]
+			if r.ok {
+				status = okStyle.Render("OK")
+			} else {
+				msg := "FALLO"
+				if r.err != nil {
+					msg = "FALLO: " + r.err.Error()
+				}
+				status = failStyle.Render(msg)
+			}
+		}
+		b.WriteString(fmt.Sprintf("  %-14s  %s:%d / %-16s  %s\n",
+			name, dbCfg.Host, dbCfg.Port, dbCfg.Database, status))
+	}
 
 	return b.String()
 }
 
-// viewInstalling shows installation progress
 func (m *AppModel) viewInstalling() string {
 	installDir := GetInstallDir()
 	inPath := IsInPath(installDir)
-
-	header := TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Instalar en el Sistema
-
-  ► Directorio: %s
-  ► En PATH: %s
-
-  ¿Instalar? (s/n)
-
-`, installDir, boolToYesNo(inPath)))
-
-	footer := HintStyle.Width(m.width - 4).Render(`
-  s/Sí · n/No · Esc volver`)
-
-	return header + footer
+	header := m.pageTitle(
+		"Instalar en el Sistema",
+		[]string{
+			fmt.Sprintf("Directorio: %s", installDir),
+			fmt.Sprintf("En PATH:    %s", boolToYesNo(inPath)),
+		},
+		"s  instalar    n / Esc  cancelar",
+	)
+	return header + "\n" +
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#FFA500")).Bold(true).Render("  Instalar? (s/n)") +
+		"\n"
 }
 
-// viewInstallDone shows installation result
 func (m *AppModel) viewInstallDone() string {
 	if m.loading {
-		return TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  %s  Instalando...
-
-`, m.spinner.View()))
+		return m.pageTitle("Instalando...", nil, "") +
+			fmt.Sprintf("\n  %s  %s\n", m.spinner.View(), m.loadingMsg)
 	}
 
+	header := m.pageTitle("Instalacion", nil, "Presiona cualquier tecla para continuar...")
 	var b strings.Builder
-	b.WriteString(TitleStyle.Width(m.width - 4).Render(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Instalacion
-
-`))
+	b.WriteString(header)
 	if m.installErr != nil {
-		b.WriteString(ErrorStyle.Render(fmt.Sprintf("  Error: %v\n", m.installErr)))
+		b.WriteString(errLine(fmt.Sprintf("Error: %v", m.installErr)))
 	} else {
-		b.WriteString(SuccessStyle.Render("  Instalado correctamente\n\n"))
+		b.WriteString(SuccessStyle.Render("  Instalado correctamente") + "\n\n")
 		if m.installResult != "" {
 			for _, line := range strings.Split(m.installResult, "\n") {
-				b.WriteString("  " + line + "\n")
+				if line != "" {
+					b.WriteString(HintStyle.Render("  "+line) + "\n")
+				}
 			}
 		}
 	}
-	b.WriteString(HintStyle.Width(m.width - 4).Render("\n  Presiona cualquier tecla para continuar..."))
 	return b.String()
 }
 
-// viewConfig shows configuration
 func (m *AppModel) viewConfig() string {
+	header := m.pageTitle("Configuracion", nil, "Presiona cualquier tecla para continuar...")
 	var b strings.Builder
-
-	b.WriteString(TitleStyle.Width(m.width - 4).Render(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Configuración
-
-`))
+	b.WriteString(header)
 
 	if len(m.config.Databases) > 0 {
 		b.WriteString("  Bases de datos:\n")
 		for name, dbCfg := range m.config.Databases {
-			b.WriteString(fmt.Sprintf("    ► %s → %s:%d/%s\n", name, dbCfg.Host, dbCfg.Port, dbCfg.Database))
+			b.WriteString(fmt.Sprintf("    %-14s  %s:%d / %s\n", name, dbCfg.Host, dbCfg.Port, dbCfg.Database))
 		}
 	}
 
-	if m.config.Settings.DBFDirectories != nil && len(m.config.Settings.DBFDirectories) > 0 {
+	if len(m.config.Settings.DBFDirectories) > 0 {
 		b.WriteString("\n  Directorios .dbf:\n")
 		for db, dir := range m.config.Settings.DBFDirectories {
-			b.WriteString(fmt.Sprintf("    ► %s → %s\n", db, dir))
+			b.WriteString(fmt.Sprintf("    %-14s  %s\n", db, dir))
 		}
 	}
-
-	b.WriteString(HintStyle.Width(m.width - 4).Render(`
-  Presioná cualquier tecla para continuar...`))
 
 	return b.String()
 }
 
-// viewQuit shows quit confirmation
 func (m *AppModel) viewQuit() string {
-	return TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  ¿Confirmar salida? (s/n)
-
-  s/Sí · n/No
-`))
+	header := m.pageTitle("Salir", nil, "s  confirmar    n / Esc  cancelar")
+	return header + "\n" +
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#FFA500")).Bold(true).Render("  Confirmar salida? (s/n)") +
+		"\n"
 }
 
-// Helper functions
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 func getActionLabel(action string) string {
 	switch action {
@@ -555,7 +475,7 @@ func getActionLabel(action string) string {
 
 func boolToYesNo(b bool) string {
 	if b {
-		return "Sí"
+		return "Si"
 	}
 	return "No"
 }
@@ -581,9 +501,9 @@ func formatDuration(d time.Duration) string {
 	if d < time.Minute {
 		return fmt.Sprintf("%.1fs", d.Seconds())
 	}
-	m := int(d.Minutes())
+	min := int(d.Minutes())
 	sec := int(d.Seconds()) % 60
-	return fmt.Sprintf("%dm %ds", m, sec)
+	return fmt.Sprintf("%dm %ds", min, sec)
 }
 
 // MutedStyle creates a muted style

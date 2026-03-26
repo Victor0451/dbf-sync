@@ -253,6 +253,8 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			m.loadingMsg = "Instalando..."
 			return m, m.runInstall()
+		case StateQuit:
+			return m, tea.Quit
 		}
 		return m, nil
 
@@ -262,6 +264,8 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.goBack()
 		case StateInstalling:
 			m.state = StateMainMenu
+		case StateQuit:
+			m.state = m.prevState
 		}
 		return m, nil
 
