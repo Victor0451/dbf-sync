@@ -76,8 +76,8 @@ func (s *SyncSummary) formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dm %ds", m, sec)
 }
 
-// formatNumber formats a number with thousands separator
-func formatNumber(n int) string {
+// formatNumberView formats a number with thousands separator (for views)
+func formatNumberView(n int) string {
 	s := fmt.Sprintf("%d", n)
 	result := ""
 	count := 0

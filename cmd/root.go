@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"os"
 
+	"charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
+
+	"dbf-sync/ui"
 )
 
 // Verbose flag
@@ -25,6 +28,14 @@ var rootCmd = &cobra.Command{
 
 Versión: %s (commit: %s, build: %s)
 Powered by VML PROGRAMMING 🐉`, appVersion, appCommit, appBuildDate),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// If no subcommand, launch interactive mode
+		configPath := GetConfigPath(cmd)
+		model := ui.NewAppModel(configPath)
+		p := tea.NewProgram(model)
+		_, err := p.Run()
+		return err
+	},
 }
 
 // Execute runs the root command

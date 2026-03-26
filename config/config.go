@@ -32,10 +32,16 @@ type TableConfig struct {
 	PostUpdate []PostRule         `yaml:"post_update"`
 }
 
+// SettingsConfig holds application settings
+type SettingsConfig struct {
+	DBFDirectories map[string]string `yaml:"dbf_directories"`
+}
+
 // Config represents the complete configuration
 type Config struct {
 	Databases map[string]DatabaseConfig `yaml:"databases"`
 	Tables    map[string]TableConfig    `yaml:"tables"`
+	Settings  SettingsConfig            `yaml:"settings"`
 }
 
 var defaultConfigPath = []string{

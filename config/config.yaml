@@ -13,6 +13,11 @@ databases:
     password: "nokia5800"
     database: sanvalentin
 
+settings:
+  dbf_directories:
+    wercho: /home/vlongo/VB/BASES/WERCHOW/
+    sanvalentin: /home/vlongo/VB/BASES/MUTUAL/
+
 tables:
   # ═══════════════════════════════════════════════════
   # PAGOS - Upsert por SERIE+NRO_RECIBO+DIA_EMI

@@ -7,6 +7,44 @@ Versionado semántico: `v{major}.{minor}.{patch}`
 
 ---
 
+## v0.2.0 — 2026-03-26
+
+### Agregado
+- **TUI completa con Bubbletea** — Interfaz de terminal profesional con lipgloss
+  - Pantalla completa con `tea.WithAltScreen()`
+  - Keybindings universales: `q` salir, `Esc` volver, `↑/↓` navegar, `Enter` confirmar
+  - Spinner animado durante procesamiento
+  - Progress bar con porcentaje y ETA
+- **Menú principal** — Opciones: Actualizar bases, Ver estado, Instalar, Configuración, Salir
+- **Navegador de archivos integrado** — Seleccionar `.dbf` navegando directorios dentro de la TUI
+  - Muestra archivos `.dbf` con tamaño y fecha
+  - Navegación con `↑/↓`, `Enter` para abrir carpeta/seleccionar, `Backspace` para volver
+  - Fallback a `$HOME` (Linux) o `C:\` (Windows) si el directorio configurado no existe
+  - Opción `t` para escribir ruta manual
+- **Instalador cross-platform** — Copia el binario a:
+  - Linux: `~/.local/bin/dbf-sync`
+  - Windows: `%APPDATA%\dbf-sync\dbf-sync.exe`
+  - Verifica si el directorio está en PATH
+- **Configuración de directorios .dbf** — Nuevo campo `settings.dbf_directories` en `config.yaml`
+  - Permite configurar directorio por base de datos
+  - Soporta paths de Windows (`C:/BASES/...`)
+- **Sin args abre TUI** — `dbf-sync` sin subcomandos abre el modo interactivo
+
+### Cambiado
+- **Migrado de survey/v2 a Bubbletea** — Mejor manejo de terminal, Ctrl+C funciona correctamente
+- **Modo interactivo** ahora usa `tea.NewProgram` con state machine completa
+- **Binario más pequeño** — 8.0MB (vs 8.3MB en v0.1.0)
+
+### Removido
+- `github.com/AlecAivazis/survey/v2` — Reemplazado por Bubbletea
+
+### Dependencias
+- `charm.land/bubbletea/v2` — Framework TUI
+- `charm.land/bubbles/v2` — Componentes (spinner, progress, list, textinput)
+- `charm.land/lipgloss/v2` — Estilos y colores
+
+---
+
 ## v0.1.0 — 2026-03-26
 
 ### Agregado
