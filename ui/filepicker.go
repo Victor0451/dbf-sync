@@ -3,6 +3,7 @@ package ui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -37,8 +38,8 @@ func ListDir(dir string) ([]DirEntry, error) {
 
 		isDir := entry.IsDir()
 		
-		// Include directories and .dbf files
-		if isDir || (len(name) >= 4 && name[len(name)-4:] == ".dbf") {
+		// Include directories and .dbf files (case-insensitive)
+		if isDir || strings.EqualFold(filepath.Ext(name), ".dbf") {
 			result = append(result, DirEntry{
 				Name:    name,
 				IsDir:   isDir,
@@ -104,7 +105,7 @@ func FormatSize(size int64) string {
 // ValidPath checks if a path exists and is accessible
 func ValidPath(path string) bool {
 	info, err := os.Stat(path)
-	return err == nil && (info.IsDir() || len(path) >= 4 && path[len(path)-4:] == ".dbf")
+	return err == nil && (info.IsDir() || strings.EqualFold(filepath.Ext(path), ".dbf"))
 }
 
 // GetParentDir returns the parent directory of a path
