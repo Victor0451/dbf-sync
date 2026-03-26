@@ -99,6 +99,19 @@ type AppModel struct {
 	// For async operations
 	loading     bool
 	loadingMsg  string
+
+	// Status view
+	statusResults map[string]statusResult
+
+	// Install view
+	installResult string
+	installErr    error
+}
+
+// statusResult holds the connection test result for one database
+type statusResult struct {
+	ok  bool
+	err error
 }
 
 // NewAppModel creates a new app model
@@ -209,6 +222,16 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case syncDoneMsg:
 		m.loading = false
 		m.state = StateSummary
+
+	case statusReadyMsg:
+		m.loading = false
+		m.statusResults = msg.results
+
+	case installDoneMsg:
+		m.loading = false
+		m.installResult = msg.result
+		m.installErr = msg.err
+		m.state = StateInstallDone
 	}
 
 	return m, nil
@@ -227,7 +250,9 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case StateConfirm:
 			return m.handleConfirm()
 		case StateInstalling:
-			m.state = StateInstallDone
+			m.loading = true
+			m.loadingMsg = "Instalando..."
+			return m, m.runInstall()
 		}
 		return m, nil
 
@@ -440,7 +465,9 @@ func (m *AppModel) handleMainMenuEnter() (tea.Model, tea.Cmd) {
 		m.loadDatabases()
 	case "status":
 		m.state = StateStatus
-		m.loadDatabases()
+		m.loading = true
+		m.statusResults = nil
+		return m, tea.Batch(m.checkConnections(), m.spinnerTickCmd())
 	case "install":
 		m.state = StateInstalling
 	case "config":
@@ -804,6 +831,15 @@ type connectedMsg struct{}
 
 type syncDoneMsg struct{}
 
+type statusReadyMsg struct {
+	results map[string]statusResult
+}
+
+type installDoneMsg struct {
+	result string
+	err    error
+}
+
 // Helper list item type
 type listItem struct {
 	Display string
@@ -813,6 +849,32 @@ type listItem struct {
 func (i listItem) FilterValue() string { return i.Value }
 func (i listItem) Title() string      { return i.Display }
 func (i listItem) Description() string { return "" }
+
+// checkConnections pings all configured databases and returns results
+func (m *AppModel) checkConnections() tea.Cmd {
+	return func() tea.Msg {
+		results := make(map[string]statusResult, len(m.config.Databases))
+		for name, dbCfg := range m.config.Databases {
+			conn, err := mysql.NewConnection(dbCfg)
+			if err != nil {
+				results[name] = statusResult{ok: false, err: err}
+				continue
+			}
+			pingErr := conn.Ping()
+			conn.Close()
+			results[name] = statusResult{ok: pingErr == nil, err: pingErr}
+		}
+		return statusReadyMsg{results: results}
+	}
+}
+
+// runInstall copies the binary to the install directory
+func (m *AppModel) runInstall() tea.Cmd {
+	return func() tea.Msg {
+		result, err := Install()
+		return installDoneMsg{result: result, err: err}
+	}
+}
 
 // getTables gets tables from a database
 func getTables(db *sql.DB, database string) ([]string, error) {

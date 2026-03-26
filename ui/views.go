@@ -396,23 +396,43 @@ func (m *AppModel) viewSummary() string {
 	return "\n" + box + "\n" + hint
 }
 
-// viewStatus shows connection status
+// viewStatus shows connection status with live ping results
 func (m *AppModel) viewStatus() string {
 	var b strings.Builder
 
-	b.WriteString(TitleStyle.Width(m.width - 4).Render(`
+	b.WriteString(TitleStyle.Width(m.width-4).Render(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Estado de Conexiones
 
 `))
 
-	for name, dbCfg := range m.config.Databases {
-		b.WriteString(fmt.Sprintf("  ► %s: %s:%d (%s)\n", name, dbCfg.Host, dbCfg.Port, dbCfg.Database))
+	if m.loading {
+		b.WriteString(fmt.Sprintf("  %s  Probando conexiones...\n", m.spinner.View()))
+	} else {
+		okStyle := lipgloss.NewStyle().Foreground(Primary).Bold(true)
+		failStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true)
+
+		for name, dbCfg := range m.config.Databases {
+			status := "..."
+			if m.statusResults != nil {
+				r := m.statusResults[name]
+				if r.ok {
+					status = okStyle.Render("OK")
+				} else {
+					msg := "FALLO"
+					if r.err != nil {
+						msg = "FALLO: " + r.err.Error()
+					}
+					status = failStyle.Render(msg)
+				}
+			}
+			b.WriteString(fmt.Sprintf("  %-14s  %s:%d / %s  →  %s\n",
+				name, dbCfg.Host, dbCfg.Port, dbCfg.Database, status))
+		}
 	}
 
-	b.WriteString(HintStyle.Width(m.width - 4).Render(`
-  Presioná cualquier tecla para continuar...`))
+	b.WriteString(HintStyle.Width(m.width - 4).Render("\n  Presiona cualquier tecla para continuar..."))
 
 	return b.String()
 }
@@ -442,13 +462,34 @@ func (m *AppModel) viewInstalling() string {
 
 // viewInstallDone shows installation result
 func (m *AppModel) viewInstallDone() string {
-	return TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
+	if m.loading {
+		return TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  ✅ Instalación Completada
+  %s  Instalando...
 
-  Presioná cualquier tecla para continuar...
+`, m.spinner.View()))
+	}
+
+	var b strings.Builder
+	b.WriteString(TitleStyle.Width(m.width - 4).Render(`
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Instalacion
+
 `))
+	if m.installErr != nil {
+		b.WriteString(ErrorStyle.Render(fmt.Sprintf("  Error: %v\n", m.installErr)))
+	} else {
+		b.WriteString(SuccessStyle.Render("  Instalado correctamente\n\n"))
+		if m.installResult != "" {
+			for _, line := range strings.Split(m.installResult, "\n") {
+				b.WriteString("  " + line + "\n")
+			}
+		}
+	}
+	b.WriteString(HintStyle.Width(m.width - 4).Render("\n  Presiona cualquier tecla para continuar..."))
+	return b.String()
 }
 
 // viewConfig shows configuration
