@@ -79,19 +79,12 @@ func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.
 		return len(toInsert), len(toUpdate), nil
 	}
 
-	// Step 4: Batch INSERT
+	// Step 4: Batch INSERT (single transaction)
 	logf("  [4/5] Inserting %d new records...\n", len(toInsert))
-	batchSize := 500
-	for i := 0; i < len(toInsert); i += batchSize {
-		end := i + batchSize
-		if end > len(toInsert) {
-			end = len(toInsert)
-		}
-		if err := batchInsert(db, dbName, tableName, toInsert[i:end]); err != nil {
-			errors = append(errors, fmt.Errorf("batch insert failed at record %d: %w", i, err))
-		} else {
-			inserted += (end - i)
-		}
+	if len(toInsert) > 0 {
+		var insertErrs []error
+		inserted, insertErrs = bulkInsert(db, dbName, tableName, toInsert, logf)
+		errors = append(errors, insertErrs...)
 	}
 
 	// Step 5: Bulk UPDATE via temp table + JOIN (single SQL operation)
@@ -217,6 +210,51 @@ func batchInsert(db *sql.DB, dbName string, tableName string, records []dbf.DBFR
 	}
 
 	return tx.Commit()
+}
+
+// bulkInsert inserts all records in a single transaction, batching into groups of batchSize.
+// This is more efficient than calling batchInsert per batch (fewer BEGIN/COMMIT round-trips).
+func bulkInsert(db *sql.DB, dbName, tableName string, records []dbf.DBFRecord, logf func(string, ...interface{})) (int, []error) {
+	if len(records) == 0 {
+		return 0, nil
+	}
+
+	const batchSize = 500
+
+	firstRecord := records[0]
+	columns := make([]string, 0, len(firstRecord))
+	for col := range firstRecord {
+		columns = append(columns, col)
+	}
+	sort.Strings(columns)
+
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, []error{fmt.Errorf("begin insert transaction: %w", err)}
+	}
+
+	target := dbName + "." + tableName
+	inserted := 0
+	total := len(records)
+
+	for i := 0; i < total; i += batchSize {
+		end := i + batchSize
+		if end > total {
+			end = total
+		}
+		if err := batchInsertTx(tx, target, records[i:end], columns); err != nil {
+			tx.Rollback()
+			return 0, []error{fmt.Errorf("insert at record %d: %w", i, err)}
+		}
+		inserted += end - i
+		logf("  [4/5] Insertados %d / %d...\n", inserted, total)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, []error{fmt.Errorf("commit inserts: %w", err)}
+	}
+
+	return inserted, nil
 }
 
 // bulkUpdateJoin performs all UPDATEs in a single SQL operation using a temp table.
@@ -417,7 +455,15 @@ func UpdateCobradorByMonth(db *sql.DB, dbName string, tableName string, records 
 	// Filter DBF records: SERIE in [2, 22] AND DIA_EMI matches target date
 	var cobradorRecords []dbf.DBFRecord
 	for _, record := range records {
-		serie, _ := record["SERIE"].(int64)
+		var serie int64
+		switch v := record["SERIE"].(type) {
+		case int64:
+			serie = v
+		case float64:
+			serie = int64(v)
+		case int:
+			serie = int64(v)
+		}
 		diaEmi, _ := record["DIA_EMI"].(time.Time)
 
 		// Check SERIE: should be 2 or 22

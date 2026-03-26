@@ -292,6 +292,10 @@ func (m *AppModel) viewProcessing() string {
 	b.WriteString(crumbStyle.Render("  › ") + fmt.Sprintf("Tabla:          %s\n", m.table))
 	b.WriteString(crumbStyle.Render("  › ") + fmt.Sprintf("Accion:         %s%s\n", getActionLabel(m.action), period))
 	b.WriteString("\n" + HintStyle.Render("  Este proceso puede tardar varios segundos.") + "\n")
+	if m.loadingMsg != "" {
+		stepStyle := lipgloss.NewStyle().Foreground(Accent)
+		b.WriteString(stepStyle.Render("  "+m.loadingMsg) + "\n")
+	}
 	b.WriteString(m.sep() + "\n")
 	return b.String()
 }

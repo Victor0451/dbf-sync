@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"charm.land/bubbletea/v2"
@@ -106,6 +107,8 @@ type AppModel struct {
 	// Install view
 	installResult string
 	installErr    error
+
+	progressCh chan string
 }
 
 // statusResult holds the connection test result for one database
@@ -187,6 +190,18 @@ func (m *AppModel) spinnerTickCmd() tea.Cmd {
 	return func() tea.Msg { return m.spinner.Tick() }
 }
 
+// progressListenerCmd reads one progress message from the channel and returns it as a tea.Msg.
+// Call it again in Update to keep listening for the next message.
+func progressListenerCmd(ch <-chan string) tea.Cmd {
+	return func() tea.Msg {
+		text, ok := <-ch
+		if !ok {
+			return progressDoneMsg{}
+		}
+		return progressMsg{text: text}
+	}
+}
+
 // Init initializes the model
 func (m *AppModel) Init() tea.Cmd {
 	return m.spinnerTickCmd()
@@ -218,6 +233,13 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case connectedMsg:
 		m.loading = false
 		m.loadTables()
+
+	case progressMsg:
+		m.loadingMsg = msg.text
+		return m, progressListenerCmd(m.progressCh)
+
+	case progressDoneMsg:
+		// channel closed, sync finished — syncDoneMsg will follow
 
 	case syncDoneMsg:
 		m.loading = false
@@ -657,10 +679,10 @@ func (m *AppModel) handleInputYear() (tea.Model, tea.Cmd) {
 // handleConfirm handles confirmation
 func (m *AppModel) handleConfirm() (tea.Model, tea.Cmd) {
 	m.loading = true
-	m.loadingMsg = "Sincronizando..."
+	m.loadingMsg = "Iniciando..."
 	m.state = StateProcessing
-
-	return m, tea.Batch(m.runSync(), m.spinnerTickCmd())
+	m.progressCh = make(chan string, 30)
+	return m, tea.Batch(m.runSync(), m.spinnerTickCmd(), progressListenerCmd(m.progressCh))
 }
 
 // loadDatabases loads databases into the list
@@ -748,6 +770,23 @@ func (m *AppModel) connectAndLoadTables() tea.Cmd {
 // runSync runs the sync operation
 func (m *AppModel) runSync() tea.Cmd {
 	return func() tea.Msg {
+		if m.progressCh != nil {
+			defer close(m.progressCh)
+		}
+		progress := func(s string) {
+			if m.progressCh == nil {
+				return
+			}
+			s = strings.TrimSpace(s)
+			if s == "" {
+				return
+			}
+			select {
+			case m.progressCh <- s:
+			default:
+			}
+		}
+
 		// Get record count BEFORE
 		recordsBefore, err := m.conn.GetRecordCount(m.table)
 		if err != nil {
@@ -780,30 +819,27 @@ func (m *AppModel) runSync() tea.Cmd {
 
 		switch m.action {
 		case "insert":
-			// Get max ID
 			matchKey := matchKeys[0]
 			maxID, _ := m.conn.GetLastRecordID(m.table, matchKey)
 			filteredRecords := mysql.FilterRecordsByID(records, matchKey, maxID)
 			inserted, errors = mysql.SyncTableAppend(m.conn.DB(), m.table, filteredRecords, matchKey, false)
 
-			// Apply post-insert rules
 			if tableConfig != nil && len(tableConfig.PostInsert) > 0 && inserted > 0 {
-				mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, filteredRecords, matchKeys, tableConfig.PostInsert, nil)
+				mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, filteredRecords, matchKeys, tableConfig.PostInsert, progress)
 			}
 
 		case "cobrador":
-			updated, errors = mysql.UpdateCobradorByMonth(m.conn.DB(), m.db, m.table, records, m.month, m.year, false, nil)
+			updated, errors = mysql.UpdateCobradorByMonth(m.conn.DB(), m.db, m.table, records, m.month, m.year, false, progress)
 
 		case "full":
-			inserted, updated, errors = mysql.SyncTableUpsert(m.conn.DB(), m.db, m.table, records, matchKeys, false, nil)
+			inserted, updated, errors = mysql.SyncTableUpsert(m.conn.DB(), m.db, m.table, records, matchKeys, false, progress)
 
-			// Apply post rules
 			if tableConfig != nil {
 				if len(tableConfig.PostInsert) > 0 && inserted > 0 {
-					mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, records, matchKeys, tableConfig.PostInsert, nil)
+					mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, records, matchKeys, tableConfig.PostInsert, progress)
 				}
 				if len(tableConfig.PostUpdate) > 0 && updated > 0 {
-					mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, records, matchKeys, tableConfig.PostUpdate, nil)
+					mysql.ApplyPostRules(m.conn.DB(), m.db, m.table, records, matchKeys, tableConfig.PostUpdate, progress)
 				}
 			}
 		}
@@ -850,6 +886,9 @@ type installDoneMsg struct {
 	result string
 	err    error
 }
+
+type progressMsg struct{ text string }
+type progressDoneMsg struct{}
 
 // Helper list item type
 type listItem struct {
