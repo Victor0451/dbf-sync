@@ -219,37 +219,35 @@ func batchInsert(db *sql.DB, dbName string, tableName string, records []dbf.DBFR
 }
 
 // batchUpdate performs batch UPDATEs within a single transaction.
+// If any record fails, the entire batch is rolled back and 0 is returned —
+// the counter must reflect reality: all-or-nothing per batch.
 func batchUpdate(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, matchKeys []string) (int, []error) {
 	if len(records) == 0 {
 		return 0, nil
 	}
-
-	var updated int
-	var errors []error
 
 	tx, err := db.Begin()
 	if err != nil {
 		return 0, []error{fmt.Errorf("failed to begin transaction: %w", err)}
 	}
 
+	var errors []error
 	for _, record := range records {
 		if err := updateRecord(tx, tableName, record, matchKeys, record, dbName); err != nil {
 			errors = append(errors, err)
-			continue
 		}
-		updated++
 	}
 
 	if len(errors) > 0 {
 		tx.Rollback()
-		return updated, errors
+		return 0, errors
 	}
 
 	if err := tx.Commit(); err != nil {
-		return updated, []error{fmt.Errorf("failed to commit: %w", err)}
+		return 0, []error{fmt.Errorf("failed to commit: %w", err)}
 	}
 
-	return updated, nil
+	return len(records), nil
 }
 
 // filterRecordToColumns filters DBF record to only include columns that exist in MySQL
