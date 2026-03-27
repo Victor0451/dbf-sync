@@ -25,22 +25,81 @@
 
 ## Installation
 
-### Download binary
+### Linux — one line
 
-Grab the latest release from [GitHub Releases](https://github.com/Victor0451/dbf-sync/releases):
+Open a terminal and run:
 
 ```bash
-# Linux
-curl -L https://github.com/Victor0451/dbf-sync/releases/latest/download/dbf-sync-linux-amd64 -o dbf-sync
-chmod +x dbf-sync
-sudo mv dbf-sync /usr/local/bin/
+curl -fsSL https://raw.githubusercontent.com/Victor0451/dbf-sync/main/install.sh | sh
 ```
+
+The script will:
+1. Detect your architecture (amd64 / arm64)
+2. Download the latest binary from GitHub Releases
+3. Install it to `~/.local/bin/dbf-sync`
+4. Make it executable
+
+After install, restart your terminal and run:
+
+```bash
+dbf-sync interactive
+```
+
+> **Note:** Make sure `~/.local/bin` is in your PATH. If not, add this to your shell config:
+> ```bash
+> # ~/.bashrc or ~/.zshrc
+> export PATH="$HOME/.local/bin:$PATH"
+>
+> # ~/.config/fish/config.fish
+> fish_add_path ~/.local/bin
+> ```
+
+---
+
+### Windows — one line
+
+Open **PowerShell** (no need to run as Administrator) and run:
 
 ```powershell
-# Windows — download dbf-sync-windows-amd64.exe and add to PATH
+irm https://raw.githubusercontent.com/Victor0451/dbf-sync/main/install.ps1 | iex
 ```
 
+The script will:
+1. Fetch the latest release from GitHub automatically
+2. Download `dbf-sync-windows-amd64.exe`
+3. Install it to `%LOCALAPPDATA%\dbf-sync\`
+4. Add that folder to your user PATH permanently
+5. Create a `dbf-sync.bat` wrapper so the command works in both CMD and PowerShell
+
+After install, **close and reopen your terminal**, then run:
+
+```powershell
+dbf-sync interactive
+```
+
+> **Tip:** You don't need admin rights — everything installs in your user profile.
+
+---
+
+### Homebrew (Linux / macOS)
+
+```bash
+brew tap Victor0451/tap
+brew install dbf-sync
+```
+
+To update to the latest version:
+
+```bash
+brew update
+brew upgrade dbf-sync
+```
+
+---
+
 ### Build from source
+
+Requires Go 1.22+.
 
 ```bash
 git clone https://github.com/Victor0451/dbf-sync.git
@@ -48,7 +107,7 @@ cd dbf-sync
 make install
 ```
 
-Requires Go 1.22+.
+This builds with the current version tag and installs to `/usr/local/bin`.
 
 ---
 
