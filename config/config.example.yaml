@@ -1,0 +1,71 @@
+databases:
+  # Add one entry per MySQL database
+  my_database:
+    host: 192.168.1.100
+    port: 3306
+    user: myuser
+    password: "mypassword"
+    database: my_database
+
+settings:
+  # Optional: default DBF directory per database (can be overridden in the UI)
+  dbf_directories:
+    my_database: /path/to/dbf/files/
+
+tables:
+  # ═══════════════════════════════════════════════════
+  # UPSERT — insert new + update existing
+  # ═══════════════════════════════════════════════════
+  my_table:
+    mode: upsert
+    match_keys: [ID]
+
+  # ═══════════════════════════════════════════════════
+  # UPSERT with update window — only update current month records
+  # ═══════════════════════════════════════════════════
+  payments:
+    mode: upsert
+    match_keys: [SERIE, NRO_RECIBO, DIA_EMI]
+    update_window: current_month
+    update_date_field: DIA_EMI
+    update_series: [2, 22]       # only update records where SERIE in [2, 22]
+    cobrador:                    # enables "Actualizar cobradores" action
+      serie: [2, 22]
+      movim_pending: "N"
+      movim_settled: "P"
+      movim_cancelled: "A"
+      dia_emi_field: DIA_EMI
+
+  # ═══════════════════════════════════════════════════
+  # APPEND — insert only, never update existing records
+  # ═══════════════════════════════════════════════════
+  bank_payments:
+    mode: append
+    match_keys: [CONTRATO, MES, ANO]
+
+  # ═══════════════════════════════════════════════════
+  # APPEND with post-insert rules
+  # ═══════════════════════════════════════════════════
+  members:
+    mode: append
+    match_keys: [CONTRATO]
+    post_insert:
+      - set: {ESTADO: 1}
+        description: "Set ESTADO=1 for all new records"
+
+  # ═══════════════════════════════════════════════════
+  # UPSERT with conditional post-rules
+  # ═══════════════════════════════════════════════════
+  dependents:
+    mode: upsert
+    match_keys: [CONTRATO, NRO_DOC]
+    post_insert:
+      - set: {ESTADO: 1}
+        when: "BAJA IS NULL"
+      - set: {ESTADO: 0}
+        when: "BAJA IS NOT NULL"
+    post_update:
+      - set: {ESTADO: 1}
+        when: "BAJA IS NULL"
+      - set: {ESTADO: 0}
+        when: "BAJA IS NOT NULL"
