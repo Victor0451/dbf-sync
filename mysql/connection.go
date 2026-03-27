@@ -124,16 +124,20 @@ func (m *MySQLConnection) GetColumnNames(table string) ([]string, error) {
 	return columns, rows.Err()
 }
 
-// GetRecordCount returns the number of records in a table
+// GetRecordCount returns an approximate row count for a table using
+// information_schema.TABLES (instant, reads metadata). For InnoDB tables,
+// COUNT(*) would do a full index scan which is unacceptably slow on large tables.
 func (m *MySQLConnection) GetRecordCount(table string) (int64, error) {
 	if err := ValidateIdentifier(table); err != nil {
 		return 0, err
 	}
 
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s", table)
+	query := `SELECT COALESCE(TABLE_ROWS, 0)
+	          FROM information_schema.TABLES
+	          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`
 
 	var count int64
-	err := m.db.QueryRow(query).Scan(&count)
+	err := m.db.QueryRow(query, table).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get record count: %w", err)
 	}

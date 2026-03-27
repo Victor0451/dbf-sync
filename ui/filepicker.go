@@ -24,6 +24,13 @@ func ListDir(dir string) ([]DirEntry, error) {
 	}
 
 	var result []DirEntry
+
+	// Always add ".." to navigate to parent (except at filesystem root)
+	parent := filepath.Dir(dir)
+	if parent != dir {
+		result = append(result, DirEntry{Name: "..", IsDir: true})
+	}
+
 	for _, entry := range entries {
 		name := entry.Name()
 		
@@ -50,8 +57,12 @@ func ListDir(dir string) ([]DirEntry, error) {
 		}
 	}
 
-	// Sort: directories first, then files, alphabetically
-	SortEntries(result)
+	// Sort everything after the ".." entry (if present)
+	offset := 0
+	if len(result) > 0 && result[0].Name == ".." {
+		offset = 1
+	}
+	SortEntries(result[offset:])
 
 	return result, nil
 }

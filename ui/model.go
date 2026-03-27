@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -56,6 +58,7 @@ type SyncResult struct {
 	Updated       int
 	Skipped       int
 	Errors        int
+	ErrorMessages []string
 	RecordsAfter  int
 	Duration      time.Duration
 }
@@ -77,11 +80,12 @@ type AppModel struct {
 	tableSearch string // live filter for table list
 
 	// Sync
-	action  string
-	dbfPath string
-	month   int
-	year    int
-	result  *SyncResult
+	action     string
+	dbfPath    string
+	month      int
+	year       int
+	result     *SyncResult
+	syncCancel context.CancelFunc
 
 	// File browser
 	currentDir  string
@@ -232,6 +236,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errorMsg:
 		m.err = msg.err
 		m.loading = false
+		// Always go back to action selection so the error is visible and user can retry
+		m.loadActions()
+		m.state = StateSelectAction
 
 	case connectedMsg:
 		m.loading = false
@@ -265,8 +272,18 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleKey handles keyboard input
 func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Block all keyboard input while a sync operation is running
+	// While processing, only allow ESC to cancel
 	if m.state == StateProcessing {
+		if msg.String() == "esc" || msg.String() == "Escape" {
+			if m.syncCancel != nil {
+				m.syncCancel()
+				m.syncCancel = nil
+			}
+			m.loading = false
+			m.loadingMsg = ""
+			m.loadActions()
+			m.state = StateSelectAction
+		}
 		return m, nil
 	}
 
@@ -577,6 +594,7 @@ func (m *AppModel) handleSelectAction() (tea.Model, tea.Cmd) {
 	}
 
 	m.action = selected.(listItem).Value
+	m.err = nil
 
 	switch m.action {
 	case "back":
@@ -616,7 +634,11 @@ func (m *AppModel) handleBrowseFileEnter() (tea.Model, tea.Cmd) {
 	path := filepath.Join(m.currentDir, entry.Name)
 
 	if entry.IsDir {
-		m.currentDir = path
+		if entry.Name == ".." {
+			m.currentDir = filepath.Dir(m.currentDir)
+		} else {
+			m.currentDir = path
+		}
 		m.loadDirectory()
 		m.cursor = 0
 	} else {
@@ -713,7 +735,9 @@ func (m *AppModel) handleConfirm() (tea.Model, tea.Cmd) {
 	m.loadingMsg = "Iniciando..."
 	m.state = StateProcessing
 	m.progressCh = make(chan string, 30)
-	return m, tea.Batch(m.runSync(), m.spinnerTickCmd(), progressListenerCmd(m.progressCh))
+	ctx, cancel := context.WithCancel(context.Background())
+	m.syncCancel = cancel
+	return m, tea.Batch(m.runSync(ctx), m.spinnerTickCmd(), progressListenerCmd(m.progressCh))
 }
 
 // loadDatabases loads databases into the list
@@ -824,12 +848,17 @@ func (m *AppModel) connectAndLoadTables() tea.Cmd {
 }
 
 // runSync runs the sync operation via the sync engine
-func (m *AppModel) runSync() tea.Cmd {
+func (m *AppModel) runSync(ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
+		// Diagnostic log — remove after debugging
+		logf, logClose := openDiagLog()
+		defer logClose()
+
 		if m.progressCh != nil {
 			defer close(m.progressCh)
 		}
 		progress := func(s string) {
+			logf("progress: %s", s)
 			if m.progressCh == nil {
 				return
 			}
@@ -840,12 +869,14 @@ func (m *AppModel) runSync() tea.Cmd {
 			select {
 			case m.progressCh <- s:
 			default:
+				logf("progress DROP (channel full): %s", s)
 			}
 		}
 
 		opts := syncer.SyncOptions{
 			DryRun:   false,
 			Progress: progress,
+			Ctx:      ctx,
 		}
 
 		switch m.action {
@@ -860,13 +891,20 @@ func (m *AppModel) runSync() tea.Cmd {
 		default:
 			opts.Mode = m.action
 		}
+		logf("action=%s mode=%s table=%s dbf=%s month=%d year=%d", m.action, opts.Mode, m.table, m.dbfPath, m.month, m.year)
 
 		// Get record count BEFORE
+		logf("calling GetRecordCount...")
 		recordsBefore, _ := m.conn.GetRecordCount(m.table)
+		logf("GetRecordCount done: %d", recordsBefore)
 
 		result, err := m.engine.SyncTable(m.db, m.table, m.dbfPath, opts)
 		if err != nil {
+			logf("FATAL ERROR: %v", err)
 			return errorMsg{err}
+		}
+		for i, e := range result.ErrorMessages {
+			logf("sync error[%d]: %s", i, e)
 		}
 
 		// Get record count AFTER
@@ -887,9 +925,13 @@ func (m *AppModel) runSync() tea.Cmd {
 			Updated:       result.Updated,
 			Skipped:       result.Skipped,
 			Errors:        result.Errors,
+			ErrorMessages: result.ErrorMessages,
 			RecordsAfter:  int(recordsAfter),
 			Duration:      result.Duration,
 		}
+
+		// Release the sync cancel func — operation is complete
+		m.syncCancel = nil
 
 		return syncDoneMsg{}
 	}
@@ -925,6 +967,19 @@ type listItem struct {
 func (i listItem) FilterValue() string { return i.Value }
 func (i listItem) Title() string      { return i.Display }
 func (i listItem) Description() string { return "" }
+
+// openDiagLog opens /tmp/dbf-sync-diag.log for appending diagnostic output.
+// Returns a printf-style logf and a close func. Temporary — remove after debugging.
+func openDiagLog() (func(string, ...interface{}), func()) {
+	f, err := os.OpenFile("/tmp/dbf-sync-diag.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return func(string, ...interface{}) {}, func() {}
+	}
+	logf := func(format string, args ...interface{}) {
+		fmt.Fprintf(f, "[%s] "+format+"\n", append([]interface{}{time.Now().Format("15:04:05.000")}, args...)...)
+	}
+	return logf, func() { f.Close() }
+}
 
 // checkConnections pings all configured databases and returns results
 func (m *AppModel) checkConnections() tea.Cmd {

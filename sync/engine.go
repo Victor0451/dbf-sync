@@ -1,7 +1,9 @@
 package sync
 
 import (
+	"context"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -17,23 +19,25 @@ type SyncEngine struct {
 
 // SyncResult contains the results of a sync operation
 type SyncResult struct {
-	Inserted int
-	Updated  int
-	Skipped  int
-	Errors   int
-	Duration time.Duration
+	Inserted      int
+	Updated       int
+	Skipped       int
+	Errors        int
+	ErrorMessages []string
+	Duration      time.Duration
 }
 
 // SyncOptions configures a sync operation.
 // Mode overrides the table config mode if set.
 // For cobrador action, set Action="cobrador", Month and Year.
 type SyncOptions struct {
-	Mode         string             // "append" | "upsert" | "cobrador" — overrides config if non-empty
+	Mode         string                   // "append" | "upsert" | "cobrador" — overrides config if non-empty
 	DryRun       bool
-	Progress     func(string)       // nil = silent
-	Month        int                // cobrador: target month (1-12)
-	Year         int                // cobrador: target year
+	Progress     func(string)             // nil = silent
+	Month        int                      // cobrador: target month (1-12)
+	Year         int                      // cobrador: target year
 	UpdateFilter func(dbf.DBFRecord) bool // upsert: if set, only update records that match
+	Ctx          context.Context          // if set, operations respect cancellation
 }
 
 // NewEngine creates a new SyncEngine
@@ -51,6 +55,12 @@ func (e *SyncEngine) Config() *config.Config {
 // appropriate sync strategy, applies post rules, and returns the result.
 func (e *SyncEngine) SyncTable(dbName, tableName, dbfPath string, opts SyncOptions) (SyncResult, error) {
 	startTime := time.Now()
+
+	// Use provided context or background
+	ctx := opts.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	logf := func(format string, args ...interface{}) {
 		if opts.Progress != nil {
@@ -106,6 +116,11 @@ func (e *SyncEngine) SyncTable(dbName, tableName, dbfPath string, opts SyncOptio
 	}
 	logf("  %d registros leidos del DBF\n", len(records))
 
+	// Check for cancellation before starting MySQL operations
+	if ctx.Err() != nil {
+		return SyncResult{}, fmt.Errorf("operación cancelada")
+	}
+
 	var inserted, updated, skipped int
 	var syncErrors []error
 
@@ -113,26 +128,25 @@ func (e *SyncEngine) SyncTable(dbName, tableName, dbfPath string, opts SyncOptio
 	case "cobrador":
 		logf("  Modo: actualizar cobradores %02d/%d\n", opts.Month, opts.Year)
 		updated, syncErrors = mysql.UpdateCobradorByMonth(
-			conn.DB(), dbCfg.Database, tableName,
+			ctx, conn.DB(), dbCfg.Database, tableName,
 			records, opts.Month, opts.Year,
 			opts.DryRun, opts.Progress,
 		)
 
 	case "append":
 		logf("  Modo: append (insertar nuevos)\n")
-		// Use hashmap-based filtering so any key type works (string, int, composite).
-		// updateFilter=always-false means classify existing records as "skip" not "update".
-		inserted, _, syncErrors = mysql.SyncTableUpsert(
-			conn.DB(), dbCfg.Database, tableName,
+		var appendSkipped int
+		inserted, _, appendSkipped, syncErrors = mysql.SyncTableUpsert(
+			ctx, conn.DB(), dbCfg.Database, tableName,
 			records, matchKeys, func(_ dbf.DBFRecord) bool { return false },
 			opts.DryRun, opts.Progress,
 		)
-		skipped = len(records) - inserted
+		skipped = appendSkipped
 
 		// Apply post-insert rules (e.g. maestro: ESTADO=1)
 		if !opts.DryRun && inserted > 0 && len(tableCfg.PostInsert) > 0 {
 			logf("  Aplicando reglas post-insert...\n")
-			if err := mysql.ApplyPostRules(conn.DB(), dbCfg.Database, tableName, records, matchKeys, tableCfg.PostInsert, opts.Progress); err != nil {
+			if err := mysql.ApplyPostRules(ctx, conn.DB(), dbCfg.Database, tableName, records, matchKeys, tableCfg.PostInsert, opts.Progress); err != nil {
 				syncErrors = append(syncErrors, err)
 			}
 		}
@@ -140,41 +154,56 @@ func (e *SyncEngine) SyncTable(dbName, tableName, dbfPath string, opts SyncOptio
 	default: // "upsert"
 		logf("  Modo: upsert (insertar + actualizar)\n")
 
-		// Build update filter from config if not already set in opts
 		updateFilter := opts.UpdateFilter
 		if updateFilter == nil && tableCfg.UpdateWindow == "current_month" && tableCfg.UpdateDateField != "" {
-			updateFilter = currentMonthFilter(tableCfg.UpdateDateField)
-			logf("  Filtro de actualización: solo registros del mes en curso (%s)\n", tableCfg.UpdateDateField)
+			now := time.Now()
+			if len(tableCfg.UpdateSeries) > 0 {
+				updateFilter = currentMonthAndSeriesFilter(tableCfg.UpdateDateField, tableCfg.UpdateSeries)
+				logf("  Filtro de actualización: %s = %02d/%d, SERIE in %v\n", tableCfg.UpdateDateField, now.Month(), now.Year(), tableCfg.UpdateSeries)
+			} else {
+				updateFilter = currentMonthFilter(tableCfg.UpdateDateField)
+				logf("  Filtro de actualización: %s = %02d/%d\n", tableCfg.UpdateDateField, now.Month(), now.Year())
+			}
 		}
 
-		inserted, updated, syncErrors = mysql.SyncTableUpsert(
-			conn.DB(), dbCfg.Database, tableName,
+		inserted, updated, _, syncErrors = mysql.SyncTableUpsert(
+			ctx, conn.DB(), dbCfg.Database, tableName,
 			records, matchKeys, updateFilter, opts.DryRun, opts.Progress,
 		)
 
-		// Apply post rules (e.g. adherent: ESTADO based on BAJA)
 		if !opts.DryRun {
 			if inserted > 0 && len(tableCfg.PostInsert) > 0 {
 				logf("  Aplicando reglas post-insert...\n")
-				if err := mysql.ApplyPostRules(conn.DB(), dbCfg.Database, tableName, records, matchKeys, tableCfg.PostInsert, opts.Progress); err != nil {
+				if err := mysql.ApplyPostRules(ctx, conn.DB(), dbCfg.Database, tableName, records, matchKeys, tableCfg.PostInsert, opts.Progress); err != nil {
 					syncErrors = append(syncErrors, err)
 				}
 			}
 			if updated > 0 && len(tableCfg.PostUpdate) > 0 {
 				logf("  Aplicando reglas post-update...\n")
-				if err := mysql.ApplyPostRules(conn.DB(), dbCfg.Database, tableName, records, matchKeys, tableCfg.PostUpdate, opts.Progress); err != nil {
+				if err := mysql.ApplyPostRules(ctx, conn.DB(), dbCfg.Database, tableName, records, matchKeys, tableCfg.PostUpdate, opts.Progress); err != nil {
 					syncErrors = append(syncErrors, err)
 				}
 			}
 		}
 	}
 
+	// Free records slice and return memory to the OS.
+	// Without this, Go holds the heap even after GC.
+	records = nil
+	debug.FreeOSMemory()
+
+	errMsgs := make([]string, 0, len(syncErrors))
+	for _, e := range syncErrors {
+		errMsgs = append(errMsgs, e.Error())
+	}
+
 	return SyncResult{
-		Inserted: inserted,
-		Updated:  updated,
-		Skipped:  skipped,
-		Errors:   len(syncErrors),
-		Duration: time.Since(startTime),
+		Inserted:      inserted,
+		Updated:       updated,
+		Skipped:       skipped,
+		Errors:        len(syncErrors),
+		ErrorMessages: errMsgs,
+		Duration:      time.Since(startTime),
 	}, nil
 }
 
@@ -194,5 +223,40 @@ func currentMonthFilter(dateField string) func(dbf.DBFRecord) bool {
 			return false
 		}
 		return t.Year() == y && t.Month() == m
+	}
+}
+
+// currentMonthAndSeriesFilter returns a filter that matches DBF records whose dateField
+// falls within the current calendar month AND whose SERIE field is in the allowed series list.
+func currentMonthAndSeriesFilter(dateField string, series []int) func(dbf.DBFRecord) bool {
+	now := time.Now()
+	y, m := now.Year(), now.Month()
+	field := strings.ToUpper(dateField)
+	seriesSet := make(map[int64]bool, len(series))
+	for _, s := range series {
+		seriesSet[int64(s)] = true
+	}
+	return func(r dbf.DBFRecord) bool {
+		v := r[field]
+		if v == nil {
+			return false
+		}
+		t, ok := v.(time.Time)
+		if !ok || t.Year() != y || t.Month() != m {
+			return false
+		}
+		sv := r["SERIE"]
+		if sv == nil {
+			return false
+		}
+		switch s := sv.(type) {
+		case int64:
+			return seriesSet[s]
+		case float64:
+			return seriesSet[int64(s)]
+		case int:
+			return seriesSet[int64(s)]
+		}
+		return false
 	}
 }

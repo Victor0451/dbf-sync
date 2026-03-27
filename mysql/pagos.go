@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sort"
@@ -22,7 +23,7 @@ import (
 // progress is an optional callback for step messages. Pass nil to suppress output.
 // updateFilter is an optional predicate applied to existing records before updating.
 // Pass nil to update all existing records.
-func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, matchKeys []string, updateFilter func(dbf.DBFRecord) bool, dryRun bool, progress func(string)) (inserted, updated int, errors []error) {
+func SyncTableUpsert(ctx context.Context, db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, matchKeys []string, updateFilter func(dbf.DBFRecord) bool, dryRun bool, progress func(string)) (inserted, updated, skipped int, errors []error) {
 	logf := func(format string, args ...interface{}) {
 		if progress != nil {
 			progress(fmt.Sprintf(format, args...))
@@ -45,7 +46,7 @@ func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.
 	logf("  [2/5] Loading existing keys from MySQL (this may take a moment)...\n")
 
 	// Step 2: Load ALL existing keys into a hash map
-	existingKeys, err := loadExistingKeys(db, dbName, tableName, matchKeys)
+	existingKeys, err := loadExistingKeys(ctx, db, dbName, tableName, matchKeys)
 	if err != nil {
 		errors = append(errors, fmt.Errorf("failed to load existing keys: %w", err))
 		return
@@ -62,17 +63,20 @@ func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.
 	for _, record := range records {
 		key := buildKey(record, matchKeys)
 		if key == "" {
+			skipped++
 			continue // Skip records with nil key fields
 		}
 
 		filtered := filterRecordToColumns(record, columnsMap)
 		if len(filtered) == 0 {
+			skipped++
 			continue
 		}
 
 		if _, exists := existingKeys[key]; exists {
 			if updateFilter != nil && !updateFilter(record) {
 				skippedUpdate++
+				skipped++
 				continue
 			}
 			toUpdate = append(toUpdate, filtered)
@@ -86,21 +90,40 @@ func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.
 	}
 	logf("        To INSERT: %d | To UPDATE: %d\n", len(toInsert), len(toUpdate))
 
-	if dryRun {
-		return len(toInsert), len(toUpdate), nil
+	// Sanity check: if all records are classified as INSERT but MySQL has existing records,
+	// the match_key field likely doesn't exist in the DBF. Log available fields to help diagnose.
+	if len(toInsert) > 0 && len(toUpdate) == 0 && len(existingKeys) > 0 && len(records) > 0 {
+		sampleKey := buildKey(records[0], matchKeys)
+		if sampleKey == "_NULL_" {
+			fields := make([]string, 0, len(records[0]))
+			for k := range records[0] {
+				fields = append(fields, k)
+			}
+			sort.Strings(fields)
+			logf("  [WARNING] match_keys %v not found in DBF record. Available fields: %v\n", matchKeys, fields)
+		}
 	}
+
+	if dryRun {
+		return len(toInsert), len(toUpdate), skipped, nil
+	}
+
+	// Free the hashmap — no longer needed after classification
+	existingKeys = nil
 
 	// Step 4: Batch INSERT (single transaction)
 	logf("  [4/5] Inserting %d new records...\n", len(toInsert))
 	if len(toInsert) > 0 {
 		var insertErrs []error
-		inserted, insertErrs = bulkInsert(db, dbName, tableName, toInsert, logf)
+		inserted, insertErrs = bulkInsert(ctx, db, dbName, tableName, toInsert, logf)
 		errors = append(errors, insertErrs...)
 	}
+	toInsert = nil // free insert batch
 
 	// Step 5: Bulk UPDATE via temp table + JOIN (single SQL operation)
 	logf("  [5/5] Updating %d existing records via JOIN...\n", len(toUpdate))
-	updateCount, updateErrs := bulkUpdateJoin(db, dbName, tableName, toUpdate, matchKeys, logf)
+	updateCount, updateErrs := bulkUpdateJoin(ctx, db, dbName, tableName, toUpdate, matchKeys, logf)
+	toUpdate = nil // free update batch
 	updated = updateCount
 	errors = append(errors, updateErrs...)
 
@@ -110,14 +133,14 @@ func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.
 // loadExistingKeys loads all composite key values from MySQL into a hash map.
 // Scans raw columns (no CONCAT_WS) so MySQL can use a covering index on matchKeys.
 // For 700K records this is ~14MB in memory — totally fine.
-func loadExistingKeys(db *sql.DB, dbName string, tableName string, matchKeys []string) (map[string]bool, error) {
+func loadExistingKeys(ctx context.Context, db *sql.DB, dbName string, tableName string, matchKeys []string) (map[string]bool, error) {
 	upperKeys := make([]string, len(matchKeys))
 	for i, k := range matchKeys {
 		upperKeys[i] = strings.ToUpper(k)
 	}
 	query := fmt.Sprintf("SELECT %s FROM %s.%s", strings.Join(upperKeys, ", "), dbName, tableName)
 
-	rows, err := db.Query(query)
+	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query existing keys: %w", err)
 	}
@@ -138,7 +161,13 @@ func loadExistingKeys(db *sql.DB, dbName string, tableName string, matchKeys []s
 		}
 		for i, v := range scanVals {
 			if v.Valid {
-				parts[i] = v.String
+				// Normalize DATETIME "2026-03-01 00:00:00" → "2026-03-01" to match
+				// how buildKey formats time.Time values from the DBF reader.
+				s := v.String
+				if len(s) > 10 && (s[10] == ' ' || s[10] == 'T') {
+					s = s[:10]
+				}
+				parts[i] = s
 			} else {
 				parts[i] = "_NULL_"
 			}
@@ -180,13 +209,12 @@ func buildKey(record dbf.DBFRecord, matchKeys []string) string {
 	return strings.Join(parts, "|")
 }
 
-// bulkInsert inserts all records in a single transaction, batching into groups of 500.
-func bulkInsert(db *sql.DB, dbName, tableName string, records []dbf.DBFRecord, logf func(string, ...interface{})) (int, []error) {
+// bulkInsert inserts all records in a single transaction.
+// Batch size is capped so total placeholders never exceed MySQL's 65535 limit.
+func bulkInsert(ctx context.Context, db *sql.DB, dbName, tableName string, records []dbf.DBFRecord, logf func(string, ...interface{})) (int, []error) {
 	if len(records) == 0 {
 		return 0, nil
 	}
-
-	const batchSize = 500
 
 	firstRecord := records[0]
 	columns := make([]string, 0, len(firstRecord))
@@ -195,7 +223,18 @@ func bulkInsert(db *sql.DB, dbName, tableName string, records []dbf.DBFRecord, l
 	}
 	sort.Strings(columns)
 
-	tx, err := db.Begin()
+	// MySQL allows max 65535 placeholders per statement.
+	// Calculate safe batch size based on column count.
+	const maxPlaceholders = 65000 // leave a small margin
+	batchSize := maxPlaceholders / len(columns)
+	if batchSize > 5000 {
+		batchSize = 5000
+	}
+	if batchSize < 1 {
+		batchSize = 1
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, []error{fmt.Errorf("begin insert transaction: %w", err)}
 	}
@@ -232,15 +271,14 @@ func bulkInsert(db *sql.DB, dbName, tableName string, records []dbf.DBFRecord, l
 //  4. DROP temp table
 //
 // For 200K updates this reduces ~200K statements to ~201 (200 batch INSERTs + 1 UPDATE JOIN).
-func bulkUpdateJoin(db *sql.DB, dbName, tableName string, records []dbf.DBFRecord, matchKeys []string, logf func(string, ...interface{})) (int, []error) {
+func bulkUpdateJoin(ctx context.Context, db *sql.DB, dbName, tableName string, records []dbf.DBFRecord, matchKeys []string, logf func(string, ...interface{})) (int, []error) {
 	if len(records) == 0 {
 		return 0, nil
 	}
 
 	const tmpTable = "_dbfsync_upd"
-	const insertBatch = 5000
 
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, []error{fmt.Errorf("begin transaction: %w", err)}
 	}
@@ -250,7 +288,10 @@ func bulkUpdateJoin(db *sql.DB, dbName, tableName string, records []dbf.DBFRecor
 	tx.Exec("SET SESSION foreign_key_checks=0")
 
 	// Drop any leftover temp table and create fresh one without indexes
-	tx.Exec("DROP TEMPORARY TABLE IF EXISTS " + tmpTable)
+	if _, err = tx.Exec("DROP TEMPORARY TABLE IF EXISTS " + tmpTable); err != nil {
+		tx.Rollback()
+		return 0, []error{fmt.Errorf("drop temp table: %w", err)}
+	}
 	_, err = tx.Exec(fmt.Sprintf(
 		"CREATE TEMPORARY TABLE %s AS SELECT * FROM %s.%s WHERE 1=0",
 		tmpTable, dbName, tableName,
@@ -268,6 +309,15 @@ func bulkUpdateJoin(db *sql.DB, dbName, tableName string, records []dbf.DBFRecor
 	}
 	sort.Strings(columns)
 
+	// Dynamic batch size to stay under MySQL's 65535 placeholder limit
+	insertBatch := 65000 / len(columns)
+	if insertBatch > 5000 {
+		insertBatch = 5000
+	}
+	if insertBatch < 1 {
+		insertBatch = 1
+	}
+
 	// Batch INSERT all records into temp table
 	logf("  [upd 1/2] Loading %d records into temp table (%d batches)...\n",
 		len(records), (len(records)+insertBatch-1)/insertBatch)
@@ -277,9 +327,10 @@ func bulkUpdateJoin(db *sql.DB, dbName, tableName string, records []dbf.DBFRecor
 		if end > len(records) {
 			end = len(records)
 		}
-		if err := batchInsertTx(tx, tmpTable, records[i:end], columns); err != nil {
+		batch := records[i:end]
+		if err := batchInsertTx(tx, tmpTable, batch, columns); err != nil {
 			tx.Rollback()
-			return 0, []error{fmt.Errorf("temp insert at %d: %w", i, err)}
+			return 0, []error{fmt.Errorf("temp insert at %d: cols=%d rows=%d placeholders=%d: %w", i, len(columns), len(batch), len(columns)*len(batch), err)}
 		}
 	}
 
@@ -418,7 +469,7 @@ func getColumnsForTable(db *sql.DB, tableName string) ([]string, error) {
 // Filters by SERIE in [2,22] AND DIA_EMI = first day of month.
 //
 // progress is an optional callback for step messages. Pass nil to suppress output (e.g. from TUI).
-func UpdateCobradorByMonth(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, month int, year int, dryRun bool, progress func(string)) (updated int, errors []error) {
+func UpdateCobradorByMonth(ctx context.Context, db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, month int, year int, dryRun bool, progress func(string)) (updated int, errors []error) {
 	logf := func(format string, args ...interface{}) {
 		if progress != nil {
 			progress(fmt.Sprintf(format, args...))
@@ -478,7 +529,7 @@ func UpdateCobradorByMonth(db *sql.DB, dbName string, tableName string, records 
 	query := fmt.Sprintf("SELECT %s FROM %s.%s WHERE %s",
 		strings.Join(upperKeys, ", "), dbName, tableName, whereClause)
 
-	rows, err := db.Query(query)
+	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		errors = append(errors, fmt.Errorf("failed to query existing cobrador records: %w", err))
 		return
@@ -544,7 +595,7 @@ func UpdateCobradorByMonth(db *sql.DB, dbName string, tableName string, records 
 	}
 
 	logf("  [4/4] Updating %d cobrador records via JOIN...\n", len(toUpdate))
-	updated, errors = bulkUpdateJoin(db, dbName, tableName, toUpdate, matchKeys, logf)
+	updated, errors = bulkUpdateJoin(ctx, db, dbName, tableName, toUpdate, matchKeys, logf)
 	if len(errors) == 0 {
 		logf("        Updated %d records\n", updated)
 	}
@@ -556,7 +607,7 @@ func UpdateCobradorByMonth(db *sql.DB, dbName string, tableName string, records 
 // For multi-key tables: uses temp table + JOIN (one query per rule instead of N batches).
 //
 // progress is an optional callback for step messages. Pass nil to suppress output.
-func ApplyPostRules(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, matchKeys []string, rules []config.PostRule, progress func(string)) error {
+func ApplyPostRules(ctx context.Context, db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, matchKeys []string, rules []config.PostRule, progress func(string)) error {
 	if len(records) == 0 || len(rules) == 0 {
 		return nil
 	}

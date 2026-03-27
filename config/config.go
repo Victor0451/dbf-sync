@@ -32,6 +32,7 @@ type TableConfig struct {
 	PostUpdate      []PostRule             `yaml:"post_update"`
 	UpdateWindow    string                 `yaml:"update_window"`    // e.g. "current_month"
 	UpdateDateField string                 `yaml:"update_date_field"` // e.g. "DIA_EMI"
+	UpdateSeries    []int                  `yaml:"update_series"`    // e.g. [2, 22] — only update records with SERIE in this list
 }
 
 // SettingsConfig holds application settings

@@ -1,6 +1,7 @@
 package mysql
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -51,7 +52,7 @@ func SyncTableAppend(db *sql.DB, dbName, tableName string, records []dbf.DBFReco
 		return len(filtered), nil
 	}
 
-	inserted, errors = bulkInsert(db, dbName, tableName, filtered, logf)
+	inserted, errors = bulkInsert(context.Background(), db, dbName, tableName, filtered, logf)
 	return
 }
 

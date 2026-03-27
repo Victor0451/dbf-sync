@@ -113,16 +113,27 @@ func (m *AppModel) viewMainMenu() string {
 		m.loadMainMenu()
 	}
 
-	banner := TitleStyle.Width(m.width - 4).Render(fmt.Sprintf(`
-  ██████╗ ██████╗ ███████╗    ███████╗██╗   ██╗███╗   ██╗ ██████╗
-  ██╔══██╗██╔══██╗██╔════╝    ██╔════╝╚██╗ ██╔╝████╗  ██║██╔════╝
-  ██║  ██║██████╔╝█████╗      ███████╗ ╚████╔╝ ██╔██╗ ██║██║
-  ██║  ██║██╔══██╗██╔══╝      ╚════██║  ╚██╔╝  ██║╚██╗██║██║
-  ██████╔╝██║  ██║██║         ███████║   ██║   ██║ ╚████║╚██████╔╝
-  ╚═════╝ ╚═╝  ╚═╝╚═╝         ╚══════╝   ╚═╝   ╚═╝  ╚═══╝ ╚═════╝
+	titleStyle := lipgloss.NewStyle().
+		Foreground(Primary).
+		Bold(true).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(Primary).
+		Padding(0, 4).
+		Width(m.width - 6).
+		Align(lipgloss.Center)
 
-  DBF Sync %s                      Powered by VML PROGRAMMING
-`, m.version))
+	versionStyle := lipgloss.NewStyle().Foreground(Muted)
+	poweredStyle := lipgloss.NewStyle().Foreground(Accent)
+
+	left := fmt.Sprintf("DBF-SYNC  %s", versionStyle.Render("v"+m.version))
+	right := poweredStyle.Render("Powered by VML PROGRAMMING")
+	pad := m.width - 20 - len(m.version) - lipgloss.Width(right)
+	if pad < 2 {
+		pad = 2
+	}
+	subtitle := left + strings.Repeat(" ", pad) + right
+
+	banner := titleStyle.Render("DBF-SYNC") + "\n" + subtitle
 
 	sep := lipgloss.NewStyle().Foreground(Muted).Render(m.sep())
 	hint := HintStyle.Render("  Que queres hacer?")
@@ -171,7 +182,11 @@ func (m *AppModel) viewSelectAction() string {
 		},
 		"↑/↓  navegar    Enter  confirmar    Esc  volver",
 	)
-	return header + m.list.View()
+	errLine := ""
+	if m.err != nil {
+		errLine = "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true).Render("  Error: "+m.err.Error()) + "\n"
+	}
+	return header + errLine + m.list.View()
 }
 
 func (m *AppModel) viewBrowseFile() string {
@@ -185,7 +200,7 @@ func (m *AppModel) viewBrowseFile() string {
 			fmt.Sprintf("Tabla:         %s", m.table),
 			fmt.Sprintf("Accion:        %s", getActionLabel(m.action)),
 		},
-		"↑/↓  navegar    Enter  abrir    Backspace  subir    t  ruta manual    Esc  volver",
+		"↑/↓  navegar    Enter  abrir/entrar    ..  subir directorio    t  ruta manual    Esc  volver",
 	)
 
 	var b strings.Builder
@@ -359,9 +374,21 @@ func (m *AppModel) viewSummary() string {
 	}
 
 	box := BoxStyle.Width(boxWidth).Render(inner)
+
+	errDetail := ""
+	if len(result.ErrorMessages) > 0 {
+		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B"))
+		var eb strings.Builder
+		eb.WriteString("\n")
+		for i, msg := range result.ErrorMessages {
+			eb.WriteString(errStyle.Render(fmt.Sprintf("  [%d] %s", i+1, msg)) + "\n")
+		}
+		errDetail = eb.String()
+	}
+
 	hint := HintStyle.Width(m.width - 4).Render("\n  Presiona cualquier tecla para continuar...")
 
-	return "\n" + box + "\n" + hint
+	return "\n" + box + errDetail + "\n" + hint
 }
 
 func (m *AppModel) viewStatus() string {
