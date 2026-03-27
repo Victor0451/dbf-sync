@@ -2,6 +2,7 @@ package sync
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"dbf-sync/config"
@@ -27,16 +28,22 @@ type SyncResult struct {
 // Mode overrides the table config mode if set.
 // For cobrador action, set Action="cobrador", Month and Year.
 type SyncOptions struct {
-	Mode     string       // "append" | "upsert" | "cobrador" — overrides config if non-empty
-	DryRun   bool
-	Progress func(string) // nil = silent
-	Month    int          // cobrador: target month (1-12)
-	Year     int          // cobrador: target year
+	Mode         string             // "append" | "upsert" | "cobrador" — overrides config if non-empty
+	DryRun       bool
+	Progress     func(string)       // nil = silent
+	Month        int                // cobrador: target month (1-12)
+	Year         int                // cobrador: target year
+	UpdateFilter func(dbf.DBFRecord) bool // upsert: if set, only update records that match
 }
 
 // NewEngine creates a new SyncEngine
 func NewEngine(cfg *config.Config) *SyncEngine {
 	return &SyncEngine{config: cfg}
+}
+
+// Config returns the engine's configuration.
+func (e *SyncEngine) Config() *config.Config {
+	return e.config
 }
 
 // SyncTable is the single entry point for all sync operations.
@@ -138,9 +145,17 @@ func (e *SyncEngine) SyncTable(dbName, tableName, dbfPath string, opts SyncOptio
 
 	default: // "upsert"
 		logf("  Modo: upsert (insertar + actualizar)\n")
+
+		// Build update filter from config if not already set in opts
+		updateFilter := opts.UpdateFilter
+		if updateFilter == nil && tableCfg.UpdateWindow == "current_month" && tableCfg.UpdateDateField != "" {
+			updateFilter = currentMonthFilter(tableCfg.UpdateDateField)
+			logf("  Filtro de actualización: solo registros del mes en curso (%s)\n", tableCfg.UpdateDateField)
+		}
+
 		inserted, updated, syncErrors = mysql.SyncTableUpsert(
 			conn.DB(), dbCfg.Database, tableName,
-			records, matchKeys, opts.DryRun, opts.Progress,
+			records, matchKeys, updateFilter, opts.DryRun, opts.Progress,
 		)
 
 		// Apply post rules (e.g. adherent: ESTADO based on BAJA)
@@ -167,4 +182,23 @@ func (e *SyncEngine) SyncTable(dbName, tableName, dbfPath string, opts SyncOptio
 		Errors:   len(syncErrors),
 		Duration: time.Since(startTime),
 	}, nil
+}
+
+// currentMonthFilter returns a filter that matches DBF records whose dateField
+// falls within the current calendar month.
+func currentMonthFilter(dateField string) func(dbf.DBFRecord) bool {
+	now := time.Now()
+	y, m := now.Year(), now.Month()
+	field := strings.ToUpper(dateField)
+	return func(r dbf.DBFRecord) bool {
+		v := r[field]
+		if v == nil {
+			return false
+		}
+		t, ok := v.(time.Time)
+		if !ok {
+			return false
+		}
+		return t.Year() == y && t.Month() == m
+	}
 }

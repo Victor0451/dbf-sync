@@ -25,11 +25,13 @@ type PostRule struct {
 
 // TableConfig holds table-specific sync configuration
 type TableConfig struct {
-	MatchKeys  []string          `yaml:"match_keys"`
-	Mode       string             `yaml:"mode"`
-	Cobrador   map[string]interface{} `yaml:"cobrador"`
-	PostInsert []PostRule         `yaml:"post_insert"`
-	PostUpdate []PostRule         `yaml:"post_update"`
+	MatchKeys       []string               `yaml:"match_keys"`
+	Mode            string                 `yaml:"mode"`
+	Cobrador        map[string]interface{} `yaml:"cobrador"`
+	PostInsert      []PostRule             `yaml:"post_insert"`
+	PostUpdate      []PostRule             `yaml:"post_update"`
+	UpdateWindow    string                 `yaml:"update_window"`    // e.g. "current_month"
+	UpdateDateField string                 `yaml:"update_date_field"` // e.g. "DIA_EMI"
 }
 
 // SettingsConfig holds application settings

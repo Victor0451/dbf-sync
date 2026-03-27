@@ -15,11 +15,14 @@ import (
 // Strategy:
 //  1. Load ALL existing match key combinations from MySQL into a hash map (1 query)
 //  2. Classify each DBF record: exists → UPDATE batch, new → INSERT batch
-//  3. Execute batch INSERTs (multi-row)
-//  4. Execute batch UPDATEs
+//  3. If updateFilter is set, only records that pass it are included in toUpdate
+//  4. Execute batch INSERTs (multi-row)
+//  5. Execute batch UPDATEs via temp table + JOIN
 //
-// progress is an optional callback for step messages. Pass nil to suppress output (e.g. from TUI).
-func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, matchKeys []string, dryRun bool, progress func(string)) (inserted, updated int, errors []error) {
+// progress is an optional callback for step messages. Pass nil to suppress output.
+// updateFilter is an optional predicate applied to existing records before updating.
+// Pass nil to update all existing records.
+func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.DBFRecord, matchKeys []string, updateFilter func(dbf.DBFRecord) bool, dryRun bool, progress func(string)) (inserted, updated int, errors []error) {
 	logf := func(format string, args ...interface{}) {
 		if progress != nil {
 			progress(fmt.Sprintf(format, args...))
@@ -54,6 +57,7 @@ func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.
 	// Step 3: Classify records
 	var toInsert []dbf.DBFRecord
 	var toUpdate []dbf.DBFRecord
+	var skippedUpdate int
 
 	for _, record := range records {
 		key := buildKey(record, matchKeys)
@@ -67,12 +71,19 @@ func SyncTableUpsert(db *sql.DB, dbName string, tableName string, records []dbf.
 		}
 
 		if _, exists := existingKeys[key]; exists {
+			if updateFilter != nil && !updateFilter(record) {
+				skippedUpdate++
+				continue
+			}
 			toUpdate = append(toUpdate, filtered)
 		} else {
 			toInsert = append(toInsert, filtered)
 		}
 	}
 
+	if skippedUpdate > 0 {
+		logf("        Skipped (fuera de ventana): %d\n", skippedUpdate)
+	}
 	logf("        To INSERT: %d | To UPDATE: %d\n", len(toInsert), len(toUpdate))
 
 	if dryRun {
