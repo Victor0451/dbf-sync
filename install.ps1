@@ -67,9 +67,32 @@ $batPath = "$installDir\$appName.bat"
 "%~dp0dbf-sync.exe" %*
 "@ | Set-Content $batPath
 
+# Install example config if no config exists yet
+$configDir  = "$env:APPDATA\dbf-sync"
+$configFile = "$configDir\config.yaml"
+$exampleUrl = "https://raw.githubusercontent.com/$repo/main/config/config.example.yaml"
+
+if (-not (Test-Path $configFile)) {
+    Write-Host "  Instalando config de ejemplo en $configFile..." -ForegroundColor Gray
+    if (-not (Test-Path $configDir)) {
+        New-Item -ItemType Directory -Path $configDir | Out-Null
+    }
+    try {
+        Invoke-WebRequest -Uri $exampleUrl -OutFile $configFile -UseBasicParsing
+        Write-Host "  Config instalado. Editalo con tus credenciales antes de usar." -ForegroundColor Green
+    } catch {
+        Write-Host "  AVISO: No se pudo descargar el config de ejemplo." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  Config existente encontrado — no se sobreescribe." -ForegroundColor Gray
+}
+
 Write-Host ""
 Write-Host "  ─────────────────────────────────────" -ForegroundColor DarkCyan
 Write-Host "  Instalacion completada!" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  Proximo paso: edita tu config:" -ForegroundColor White
+Write-Host "    notepad $configFile" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "  Reinicia tu terminal y ejecuta:" -ForegroundColor White
 Write-Host "    dbf-sync interactive" -ForegroundColor Yellow

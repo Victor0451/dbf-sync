@@ -44,10 +44,24 @@ echo ""
 # Create install dir
 mkdir -p "$INSTALL_DIR"
 
-# Download
+# Download binary
 echo "  Descargando $BINARY..."
 curl -fsSL "$URL" -o "$INSTALL_DIR/$APP"
 chmod +x "$INSTALL_DIR/$APP"
+
+# Install example config if no config exists yet
+CONFIG_DIR="${HOME}/.dbf-sync"
+CONFIG_FILE="${CONFIG_DIR}/config.yaml"
+EXAMPLE_URL="https://raw.githubusercontent.com/${REPO}/main/config/config.example.yaml"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "  Instalando config de ejemplo en $CONFIG_FILE..."
+  mkdir -p "$CONFIG_DIR"
+  curl -fsSL "$EXAMPLE_URL" -o "$CONFIG_FILE"
+  echo "  Config instalado. Editalo con tus credenciales antes de usar."
+else
+  echo "  Config existente encontrado en $CONFIG_FILE — no se sobreescribe."
+fi
 
 # Check PATH
 case ":$PATH:" in
@@ -63,6 +77,9 @@ echo ""
 echo "  ─────────────────────────────────────"
 echo "  Instalacion completada! v$VERSION"
 echo ""
-echo "  Ejecuta:"
+echo "  Proximo paso: edita tu config:"
+echo "    nano ${CONFIG_FILE}"
+echo ""
+echo "  Luego ejecuta:"
 echo "    dbf-sync interactive"
 echo ""

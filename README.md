@@ -37,13 +37,18 @@ The script will:
 1. Detect your architecture (amd64 / arm64)
 2. Download the latest binary from GitHub Releases
 3. Install it to `~/.local/bin/dbf-sync`
-4. Make it executable
+4. Copy `config.example.yaml` to `~/.dbf-sync/config.yaml` if no config exists yet
 
-After install, restart your terminal and run:
+**After install:**
 
-```bash
-dbf-sync interactive
-```
+1. Edit your config with your database credentials:
+   ```bash
+   nano ~/.dbf-sync/config.yaml
+   ```
+2. Restart your terminal (or reload your shell), then run:
+   ```bash
+   dbf-sync interactive
+   ```
 
 > **Note:** Make sure `~/.local/bin` is in your PATH. If not, add this to your shell config:
 > ```bash
@@ -70,12 +75,18 @@ The script will:
 3. Install it to `%LOCALAPPDATA%\dbf-sync\`
 4. Add that folder to your user PATH permanently
 5. Create a `dbf-sync.bat` wrapper so the command works in both CMD and PowerShell
+6. Copy `config.example.yaml` to `%APPDATA%\dbf-sync\config.yaml` if no config exists yet
 
-After install, **close and reopen your terminal**, then run:
+**After install:**
 
-```powershell
-dbf-sync interactive
-```
+1. Edit your config with your database credentials:
+   ```powershell
+   notepad "$env:APPDATA\dbf-sync\config.yaml"
+   ```
+2. Close and reopen your terminal, then run:
+   ```powershell
+   dbf-sync interactive
+   ```
 
 > **Tip:** You don't need admin rights — everything installs in your user profile.
 
@@ -86,6 +97,22 @@ dbf-sync interactive
 ```bash
 brew tap Victor0451/tap
 brew install dbf-sync
+```
+
+After install, create your config:
+
+```bash
+mkdir -p ~/.dbf-sync
+# Download the example config as a starting point:
+curl -fsSL https://raw.githubusercontent.com/Victor0451/dbf-sync/main/config/config.example.yaml \
+  > ~/.dbf-sync/config.yaml
+nano ~/.dbf-sync/config.yaml
+```
+
+Then run:
+
+```bash
+dbf-sync interactive
 ```
 
 To update to the latest version:
@@ -108,6 +135,13 @@ make install
 ```
 
 This builds with the current version tag and installs to `/usr/local/bin`.
+
+When running from the project directory, the app will pick up `config/config.yaml` automatically. Copy the example first:
+
+```bash
+cp config/config.example.yaml config/config.yaml
+# edit config/config.yaml with your credentials
+```
 
 ---
 

@@ -47,10 +47,20 @@ type Config struct {
 	Settings  SettingsConfig            `yaml:"settings"`
 }
 
-var defaultConfigPath = []string{
-	"./config.yaml",
-	"./config/config.yaml",
-	"$HOME/.dbf-sync/config.yaml",
+// configSearchPaths returns all candidate config paths in priority order.
+func configSearchPaths() []string {
+	paths := []string{
+		"./config.yaml",
+		"./config/config.yaml",
+	}
+	if home := os.Getenv("HOME"); home != "" {
+		paths = append(paths, filepath.Join(home, ".dbf-sync", "config.yaml"))
+	}
+	// Windows: %APPDATA%\dbf-sync\config.yaml
+	if appdata := os.Getenv("APPDATA"); appdata != "" {
+		paths = append(paths, filepath.Join(appdata, "dbf-sync", "config.yaml"))
+	}
+	return paths
 }
 
 // LoadConfig loads configuration from a YAML file
@@ -59,21 +69,22 @@ func LoadConfig(path string) (*Config, error) {
 
 	// If no path provided, search default locations
 	if configPath == "" {
-		home := os.Getenv("HOME")
+		candidates := configSearchPaths()
 		var found bool
-		for _, p := range defaultConfigPath {
-			if p == "$HOME/.dbf-sync/config.yaml" && home != "" {
-				configPath = filepath.Join(home, ".dbf-sync/config.yaml")
-			} else {
+		for _, p := range candidates {
+			if _, err := os.Stat(p); err == nil {
 				configPath = p
-			}
-			if _, err := os.Stat(configPath); err == nil {
 				found = true
 				break
 			}
 		}
 		if !found {
-			return nil, fmt.Errorf("no config file found in default locations: %v", defaultConfigPath)
+			return nil, fmt.Errorf(
+				"no config file found.\n\nPut your config at one of these locations:\n"+
+					"  Linux/macOS : ~/.dbf-sync/config.yaml\n"+
+					"  Windows     : %%APPDATA%%\\dbf-sync\\config.yaml\n\n"+
+					"Copy config/config.example.yaml as a starting point.",
+			)
 		}
 	}
 
