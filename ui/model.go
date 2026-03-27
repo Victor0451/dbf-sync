@@ -342,6 +342,13 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Text input states: forward all keys to the textInput component
+	if m.state == StateInputMonth || m.state == StateInputYear || m.state == StateManualPath {
+		var cmd tea.Cmd
+		m.textInput, cmd = m.textInput.Update(msg)
+		return m, cmd
+	}
+
 	return m, nil
 }
 
@@ -616,6 +623,9 @@ func (m *AppModel) handleBrowseFileEnter() (tea.Model, tea.Cmd) {
 		m.dbfPath = path
 		// Based on action type, go to appropriate state
 		if m.action == "cobrador" {
+			m.textInput.Reset()
+			m.textInput.Placeholder = "Mes (1-12)"
+			m.textInput.Focus()
 			m.state = StateInputMonth
 		} else {
 			m.state = StateConfirm
@@ -637,6 +647,8 @@ func (m *AppModel) handleManualPath() (tea.Model, tea.Cmd) {
 		m.dbfPath = path
 		m.textInput.Reset()
 		if m.action == "cobrador" {
+			m.textInput.Placeholder = "Mes (1-12)"
+			m.textInput.Focus()
 			m.state = StateInputMonth
 		} else {
 			m.state = StateConfirm
@@ -667,8 +679,9 @@ func (m *AppModel) handleInputMonth() (tea.Model, tea.Cmd) {
 
 	m.month = month
 	m.textInput.Reset()
-	m.state = StateInputYear
 	m.textInput.Placeholder = "Año (e.g. 2026)"
+	m.textInput.Focus()
+	m.state = StateInputYear
 
 	return m, nil
 }
@@ -731,15 +744,30 @@ func (m *AppModel) loadTables() {
 	m.list.Select(0)
 }
 
-// loadActions loads actions into the list
+// loadActions loads actions into the list based on the table's config.
+// Only shows options that make sense for the selected table.
 func (m *AppModel) loadActions() {
-	items := []list.Item{
-		listItem{Display: "Insertar nuevos registros", Value: "insert"},
-		listItem{Display: "Actualizar cobradores (por mes)", Value: "cobrador"},
-		listItem{Display: "Sync completo (insertar + actualizar)", Value: "full"},
+	tableCfg, _ := m.engine.Config().GetTableConfig(m.table)
+
+	items := []list.Item{}
+
+	// Append mode: show "insertar nuevos" as primary option
+	if tableCfg != nil && tableCfg.Mode == "append" {
+		items = append(items, listItem{Display: "Insertar nuevos registros", Value: "insert"})
+	}
+
+	// Cobrador: only if table has cobrador config
+	if tableCfg != nil && tableCfg.Cobrador != nil {
+		items = append(items, listItem{Display: "Actualizar cobradores (por mes)", Value: "cobrador"})
+	}
+
+	// Sync completo: always available
+	items = append(items, listItem{Display: "Sync completo (insertar + actualizar)", Value: "full"})
+
+	items = append(items,
 		listItem{Display: "← Volver", Value: "back"},
 		listItem{Display: "Salir", Value: "quit"},
-	}
+	)
 	m.list.SetItems(items)
 }
 

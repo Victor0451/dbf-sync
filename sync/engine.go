@@ -120,25 +120,19 @@ func (e *SyncEngine) SyncTable(dbName, tableName, dbfPath string, opts SyncOptio
 
 	case "append":
 		logf("  Modo: append (insertar nuevos)\n")
-		matchKey := matchKeys[0]
-		lastID, err := conn.GetLastRecordID(tableName, matchKey)
-		if err != nil {
-			logf("  Tabla vacia o sin registros previos, insertando todo\n")
-			lastID = 0
-		}
-		filtered := mysql.FilterRecordsByID(records, matchKey, lastID)
-		skipped = len(records) - len(filtered)
-		logf("  Nuevos: %d | Existentes: %d\n", len(filtered), skipped)
-
-		inserted, syncErrors = mysql.SyncTableAppend(
+		// Use hashmap-based filtering so any key type works (string, int, composite).
+		// updateFilter=always-false means classify existing records as "skip" not "update".
+		inserted, _, syncErrors = mysql.SyncTableUpsert(
 			conn.DB(), dbCfg.Database, tableName,
-			filtered, matchKey, opts.DryRun, opts.Progress,
+			records, matchKeys, func(_ dbf.DBFRecord) bool { return false },
+			opts.DryRun, opts.Progress,
 		)
+		skipped = len(records) - inserted
 
 		// Apply post-insert rules (e.g. maestro: ESTADO=1)
 		if !opts.DryRun && inserted > 0 && len(tableCfg.PostInsert) > 0 {
 			logf("  Aplicando reglas post-insert...\n")
-			if err := mysql.ApplyPostRules(conn.DB(), dbCfg.Database, tableName, filtered, matchKeys, tableCfg.PostInsert, opts.Progress); err != nil {
+			if err := mysql.ApplyPostRules(conn.DB(), dbCfg.Database, tableName, records, matchKeys, tableCfg.PostInsert, opts.Progress); err != nil {
 				syncErrors = append(syncErrors, err)
 			}
 		}
