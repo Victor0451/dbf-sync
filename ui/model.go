@@ -298,6 +298,12 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Config form: must be before the generic switch — otherwise s/n/d/q/j/k
+	// get consumed and the form fields never receive input.
+	if m.state == StateConfigForm {
+		return m.handleConfigFormKey(msg)
+	}
+
 	// Config list: fully custom cursor — no list.Model involved
 	if m.state == StateConfig {
 		switch msg.String() {
@@ -430,11 +436,6 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.textInput, cmd = m.textInput.Update(msg)
 		return m, cmd
-	}
-
-	// Config form: forward all keys to the focused field
-	if m.state == StateConfigForm {
-		return m.handleConfigFormKey(msg)
 	}
 
 	return m, nil
