@@ -414,7 +414,7 @@ func (m *AppModel) moveUp() (tea.Model, tea.Cmd) {
 		if m.cursor > 0 {
 			m.cursor--
 		}
-	case StateSelectDB, StateSelectTable, StateSelectAction, StateMainMenu:
+	case StateSelectDB, StateSelectTable, StateSelectAction, StateMainMenu, StateConfig:
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(tea.KeyPressMsg{Code: 'k'})
 		return m, cmd
@@ -429,7 +429,7 @@ func (m *AppModel) moveDown() (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.dirEntries)-1 {
 			m.cursor++
 		}
-	case StateSelectDB, StateSelectTable, StateSelectAction, StateMainMenu:
+	case StateSelectDB, StateSelectTable, StateSelectAction, StateMainMenu, StateConfig:
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(tea.KeyPressMsg{Code: 'j'})
 		return m, cmd
