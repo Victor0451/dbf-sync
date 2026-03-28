@@ -115,6 +115,10 @@ type AppModel struct {
 	installResult string
 	installErr    error
 
+	// Config list (own cursor — avoids list.Model interference)
+	configEntries []string // database keys in display order
+	configCursor  int
+
 	// Config form
 	configFormFields []textinput.Model // [name, host, port, user, password, database, dbfDir]
 	configFormIdx    int               // focused field index
@@ -294,44 +298,40 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Config list: handle all keys here before the generic switch
+	// Config list: fully custom cursor — no list.Model involved
 	if m.state == StateConfig {
 		switch msg.String() {
 		case "esc", "Escape":
 			m.loadMainMenu()
 			m.state = StateMainMenu
-			return m, nil
+		case "up", "k":
+			if m.configCursor > 0 {
+				m.configCursor--
+			}
+		case "down", "j":
+			if m.configCursor < len(m.configEntries)-1 {
+				m.configCursor++
+			}
+		case "enter", "Enter":
+			if m.configCursor < len(m.configEntries) {
+				m.initConfigForm(m.configEntries[m.configCursor])
+				m.state = StateConfigForm
+			}
 		case "n", "N":
 			m.initConfigForm("")
 			m.state = StateConfigForm
-			return m, nil
 		case "d", "D":
-			if sel := m.list.SelectedItem(); sel != nil {
-				name := sel.(listItem).Value
-				if name != "" {
-					delete(m.config.Databases, name)
-					if m.config.Settings.DBFDirectories != nil {
-						delete(m.config.Settings.DBFDirectories, name)
-					}
-					_ = config.SaveConfig(m.resolvedConfigPath(), m.config)
-					m.loadConfigList()
+			if m.configCursor < len(m.configEntries) {
+				name := m.configEntries[m.configCursor]
+				delete(m.config.Databases, name)
+				if m.config.Settings.DBFDirectories != nil {
+					delete(m.config.Settings.DBFDirectories, name)
 				}
+				_ = config.SaveConfig(m.resolvedConfigPath(), m.config)
+				m.loadConfigList()
 			}
-			return m, nil
-		case "enter", "Enter":
-			if sel := m.list.SelectedItem(); sel != nil {
-				name := sel.(listItem).Value
-				if name != "" {
-					m.initConfigForm(name)
-					m.state = StateConfigForm
-				}
-			}
-			return m, nil
-		default:
-			var cmd tea.Cmd
-			m.list, cmd = m.list.Update(msg)
-			return m, cmd
 		}
+		return m, nil
 	}
 
 	switch msg.String() {
@@ -955,19 +955,16 @@ func (m *AppModel) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// loadConfigList loads the database list for the config menu.
+// loadConfigList builds the ordered list of DB keys for the config cursor.
 func (m *AppModel) loadConfigList() {
-	items := make([]list.Item, 0, len(m.config.Databases)+1)
+	entries := make([]string, 0, len(m.config.Databases))
 	for name := range m.config.Databases {
-		db := m.config.Databases[name]
-		display := fmt.Sprintf("%-14s  %s:%d / %s", name, db.Host, db.Port, db.Database)
-		items = append(items, listItem{Display: display, Value: name})
+		entries = append(entries, name)
 	}
-	if len(items) == 0 {
-		items = append(items, listItem{Display: "(sin conexiones — presioná N para agregar)", Value: ""})
+	m.configEntries = entries
+	if m.configCursor >= len(entries) {
+		m.configCursor = 0
 	}
-	m.list.SetItems(items)
-	m.list.Select(0)
 }
 
 // loadDatabases loads databases into the list

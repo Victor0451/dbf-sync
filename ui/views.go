@@ -467,11 +467,29 @@ func (m *AppModel) viewInstallDone() string {
 }
 
 func (m *AppModel) viewConfig() string {
-	hint := "↑/↓  navegar    Enter  editar    N  nueva conexión    D  eliminar    Esc  volver"
+	hint := "↑/↓  navegar    Enter  editar    N  nueva    D  eliminar    Esc  volver"
 	header := m.pageTitle("Configuración de Conexiones", nil, hint)
 	var b strings.Builder
 	b.WriteString(header)
-	b.WriteString(m.list.View())
+	b.WriteString("\n")
+
+	if len(m.configEntries) == 0 {
+		b.WriteString(lipgloss.NewStyle().Foreground(Muted).Render("  (sin conexiones — presioná N para agregar)") + "\n")
+		return b.String()
+	}
+
+	cursorStyle := lipgloss.NewStyle().Foreground(Primary).Bold(true)
+	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
+
+	for i, name := range m.configEntries {
+		db := m.config.Databases[name]
+		line := fmt.Sprintf("  %-16s  %s:%d  /  %s", name, db.Host, db.Port, db.Database)
+		if i == m.configCursor {
+			b.WriteString(cursorStyle.Render("▶ "+line[2:]) + "\n")
+		} else {
+			b.WriteString(normalStyle.Render(line) + "\n")
+		}
+	}
 	return b.String()
 }
 
