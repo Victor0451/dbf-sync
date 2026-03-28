@@ -294,6 +294,46 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Config list: handle all keys here before the generic switch
+	if m.state == StateConfig {
+		switch msg.String() {
+		case "esc", "Escape":
+			m.loadMainMenu()
+			m.state = StateMainMenu
+			return m, nil
+		case "n", "N":
+			m.initConfigForm("")
+			m.state = StateConfigForm
+			return m, nil
+		case "d", "D":
+			if sel := m.list.SelectedItem(); sel != nil {
+				name := sel.(listItem).Value
+				if name != "" {
+					delete(m.config.Databases, name)
+					if m.config.Settings.DBFDirectories != nil {
+						delete(m.config.Settings.DBFDirectories, name)
+					}
+					_ = config.SaveConfig(m.resolvedConfigPath(), m.config)
+					m.loadConfigList()
+				}
+			}
+			return m, nil
+		case "enter", "Enter":
+			if sel := m.list.SelectedItem(); sel != nil {
+				name := sel.(listItem).Value
+				if name != "" {
+					m.initConfigForm(name)
+					m.state = StateConfigForm
+				}
+			}
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.list, cmd = m.list.Update(msg)
+			return m, cmd
+		}
+	}
+
 	switch msg.String() {
 	case "s", "S":
 		switch m.state {
@@ -407,7 +447,7 @@ func (m *AppModel) moveUp() (tea.Model, tea.Cmd) {
 		if m.cursor > 0 {
 			m.cursor--
 		}
-	case StateSelectDB, StateSelectTable, StateSelectAction, StateMainMenu, StateConfig:
+	case StateSelectDB, StateSelectTable, StateSelectAction, StateMainMenu:
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(tea.KeyPressMsg{Code: 'k'})
 		return m, cmd
@@ -422,7 +462,7 @@ func (m *AppModel) moveDown() (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.dirEntries)-1 {
 			m.cursor++
 		}
-	case StateSelectDB, StateSelectTable, StateSelectAction, StateMainMenu, StateConfig:
+	case StateSelectDB, StateSelectTable, StateSelectAction, StateMainMenu:
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(tea.KeyPressMsg{Code: 'j'})
 		return m, cmd
@@ -495,16 +535,6 @@ func (m *AppModel) handleEnter() (tea.Model, tea.Cmd) {
 
 	case StateInstallDone:
 		m.state = StateMainMenu
-
-	case StateConfig:
-		// Enter on a list item = edit that connection
-		if sel := m.list.SelectedItem(); sel != nil {
-			name := sel.(listItem).Value
-			if name != "" {
-				m.initConfigForm(name)
-				m.state = StateConfigForm
-			}
-		}
 
 	default:
 		return m, nil
