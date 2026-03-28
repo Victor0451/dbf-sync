@@ -937,6 +937,7 @@ func (m *AppModel) loadConfigList() {
 		items = append(items, listItem{Display: "(sin conexiones — presioná N para agregar)", Value: ""})
 	}
 	m.list.SetItems(items)
+	m.list.Select(0)
 }
 
 // loadDatabases loads databases into the list
