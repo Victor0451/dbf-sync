@@ -316,6 +316,25 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = StateMainMenu
 		case StateQuit:
 			m.state = m.prevState
+		case StateConfig:
+			m.initConfigForm("")
+			m.state = StateConfigForm
+		}
+		return m, nil
+
+	case "d", "D":
+		if m.state == StateConfig {
+			if sel := m.list.SelectedItem(); sel != nil {
+				name := sel.(listItem).Value
+				if name != "" {
+					delete(m.config.Databases, name)
+					if m.config.Settings.DBFDirectories != nil {
+						delete(m.config.Settings.DBFDirectories, name)
+					}
+					_ = config.SaveConfig(m.resolvedConfigPath(), m.config)
+					m.loadConfigList()
+				}
+			}
 		}
 		return m, nil
 
@@ -376,32 +395,6 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Config form: forward all keys to the focused field
 	if m.state == StateConfigForm {
 		return m.handleConfigFormKey(msg)
-	}
-
-	// Config menu: n = new, d = delete selected
-	if m.state == StateConfig {
-		switch msg.String() {
-		case "n", "N":
-			m.initConfigForm("")
-			m.state = StateConfigForm
-			return m, nil
-		case "d", "D":
-			var cmd tea.Cmd
-			m.list, cmd = m.list.Update(msg)
-			_ = cmd
-			if sel := m.list.SelectedItem(); sel != nil {
-				name := sel.(listItem).Value
-				if name != "" {
-					delete(m.config.Databases, name)
-					if m.config.Settings.DBFDirectories != nil {
-						delete(m.config.Settings.DBFDirectories, name)
-					}
-					_ = config.SaveConfig(m.resolvedConfigPath(), m.config)
-					m.loadConfigList()
-				}
-			}
-			return m, nil
-		}
 	}
 
 	return m, nil
