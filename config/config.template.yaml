@@ -1,0 +1,83 @@
+# DBF-SYNC — Configuration Template
+# Copy this file to:
+#   Linux/macOS : ~/.dbf-sync/config.yaml
+#   Windows     : %APPDATA%\dbf-sync\config.yaml
+#
+# Fill in your database credentials using the Config screen in the TUI,
+# or edit this file manually.
+
+databases:
+  # Add one entry per MySQL database you want to sync.
+  # Use the Config screen in the app to add or edit connections.
+
+settings:
+  dbf_directories: {}
+
+tables:
+  # ═══════════════════════════════════════════════════
+  # PAGOS — Upsert por SERIE+NRO_RECIBO+DIA_EMI
+  # Solo actualiza recibos del mes actual con SERIE 2 o 22
+  # Soporta "Actualizar cobradores" por mes/año
+  # ═══════════════════════════════════════════════════
+  pagos:
+    mode: upsert
+    match_keys: [SERIE, NRO_RECIBO, DIA_EMI]
+    update_window: current_month
+    update_date_field: DIA_EMI
+    update_series: [2, 22]
+    cobrador:
+      serie: [2, 22]
+      movim_pending: "N"
+      movim_settled: "P"
+      movim_cancelled: "A"
+      dia_emi_field: DIA_EMI
+
+  # ═══════════════════════════════════════════════════
+  # PAGO_BCO — Solo append (nuevos registros bancarios)
+  # ═══════════════════════════════════════════════════
+  pago_bco:
+    mode: append
+    match_keys: [CONTRATO, MES, ANO]
+
+  # ═══════════════════════════════════════════════════
+  # MAESTRO — Insertar nuevos, forzar ESTADO=1
+  # ═══════════════════════════════════════════════════
+  maestro:
+    mode: append
+    match_keys: [CONTRATO]
+    post_insert:
+      - set: {ESTADO: 1}
+        description: "Forzar ESTADO=1 para nuevos registros"
+
+  # ═══════════════════════════════════════════════════
+  # ADHERENT — Upsert con lógica de ESTADO según BAJA
+  # BAJA IS NULL → ESTADO=1 (activo)
+  # BAJA IS NOT NULL → ESTADO=0 (dado de baja)
+  # ═══════════════════════════════════════════════════
+  adherent:
+    mode: upsert
+    match_keys: [CONTRATO, NRO_DOC]
+    post_insert:
+      - set: {ESTADO: 1}
+        when: "BAJA IS NULL"
+      - set: {ESTADO: 0}
+        when: "BAJA IS NOT NULL"
+    post_update:
+      - set: {ESTADO: 1}
+        when: "BAJA IS NULL"
+      - set: {ESTADO: 0}
+        when: "BAJA IS NOT NULL"
+
+  # ═══════════════════════════════════════════════════
+  # CUO_FIJA — Upsert (un registro por contrato)
+  # ═══════════════════════════════════════════════════
+  cuo_fija:
+    mode: upsert
+    match_keys: [CONTRATO]
+
+  # ═══════════════════════════════════════════════════
+  # BAJAS — Solo append (bajas de adherentes)
+  # ═══════════════════════════════════════════════════
+  bajas:
+    mode: append
+    match_keys: [CONTRATO]

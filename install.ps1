@@ -70,7 +70,7 @@ $batPath = "$installDir\$appName.bat"
 # Install example config if no config exists yet
 $configDir  = "$env:APPDATA\dbf-sync"
 $configFile = "$configDir\config.yaml"
-$exampleUrl = "https://raw.githubusercontent.com/$repo/main/config/config.example.yaml"
+$exampleUrl = "https://raw.githubusercontent.com/$repo/main/config/config.template.yaml"
 
 if (-not (Test-Path $configFile)) {
     Write-Host "  Instalando config de ejemplo en $configFile..." -ForegroundColor Gray

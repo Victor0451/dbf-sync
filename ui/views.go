@@ -95,6 +95,8 @@ func (m *AppModel) View() tea.View {
 		content = m.viewInstallDone()
 	case StateConfig:
 		content = m.viewConfig()
+	case StateConfigForm:
+		content = m.viewConfigForm()
 	case StateQuit:
 		content = m.viewQuit()
 	default:
@@ -465,22 +467,43 @@ func (m *AppModel) viewInstallDone() string {
 }
 
 func (m *AppModel) viewConfig() string {
-	header := m.pageTitle("Configuracion", nil, "Presiona cualquier tecla para continuar...")
+	hint := "↑/↓  navegar    Enter  editar    N  nueva conexión    D  eliminar    Esc  volver"
+	header := m.pageTitle("Configuración de Conexiones", nil, hint)
 	var b strings.Builder
 	b.WriteString(header)
+	b.WriteString(m.list.View())
+	return b.String()
+}
 
-	if len(m.config.Databases) > 0 {
-		b.WriteString("  Bases de datos:\n")
-		for name, dbCfg := range m.config.Databases {
-			b.WriteString(fmt.Sprintf("    %-14s  %s:%d / %s\n", name, dbCfg.Host, dbCfg.Port, dbCfg.Database))
+func (m *AppModel) viewConfigForm() string {
+	var title string
+	if m.configEditingDB == "" {
+		title = "Nueva Conexión"
+	} else {
+		title = "Editar: " + m.configEditingDB
+	}
+	hint := "Tab/↑↓  navegar campos    Enter  siguiente/guardar    Ctrl+S  guardar    Esc  cancelar"
+	header := m.pageTitle(title, nil, hint)
+
+	labels := []string{"Nombre interno", "Host / IP", "Puerto", "Usuario", "Contraseña", "Base de datos MySQL", "Directorio DBF"}
+	var b strings.Builder
+	b.WriteString(header)
+	b.WriteString("\n")
+
+	labelStyle := lipgloss.NewStyle().Foreground(Muted).Width(22)
+	activeLabel := lipgloss.NewStyle().Foreground(Primary).Bold(true).Width(22)
+
+	for i, f := range m.configFormFields {
+		lbl := labelStyle.Render(labels[i])
+		if i == m.configFormIdx {
+			lbl = activeLabel.Render(labels[i])
 		}
+		b.WriteString("  " + lbl + f.View() + "\n")
 	}
 
-	if len(m.config.Settings.DBFDirectories) > 0 {
-		b.WriteString("\n  Directorios .dbf:\n")
-		for db, dir := range m.config.Settings.DBFDirectories {
-			b.WriteString(fmt.Sprintf("    %-14s  %s\n", db, dir))
-		}
+	if m.configSaveErr != nil {
+		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Bold(true)
+		b.WriteString("\n  " + errStyle.Render("Error: "+m.configSaveErr.Error()) + "\n")
 	}
 
 	return b.String()

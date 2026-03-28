@@ -52,7 +52,7 @@ chmod +x "$INSTALL_DIR/$APP"
 # Install example config if no config exists yet
 CONFIG_DIR="${HOME}/.dbf-sync"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
-EXAMPLE_URL="https://raw.githubusercontent.com/${REPO}/main/config/config.example.yaml"
+EXAMPLE_URL="https://raw.githubusercontent.com/${REPO}/main/config/config.template.yaml"
 
 if [ ! -f "$CONFIG_FILE" ]; then
   echo "  Instalando config de ejemplo en $CONFIG_FILE..."

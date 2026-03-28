@@ -145,6 +145,32 @@ func mustParseInt(s string) int {
 	return n
 }
 
+// ResolveConfigPath returns the path where config should be saved when none is specified.
+func ResolveConfigPath() string {
+	if home := os.Getenv("HOME"); home != "" {
+		return filepath.Join(home, ".dbf-sync", "config.yaml")
+	}
+	if appdata := os.Getenv("APPDATA"); appdata != "" {
+		return filepath.Join(appdata, "dbf-sync", "config.yaml")
+	}
+	return "config.yaml"
+}
+
+// SaveConfig writes the config back to the given path, creating directories as needed.
+func SaveConfig(path string, cfg *Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	return nil
+}
+
 // GetDatabase returns database config by name
 func (c *Config) GetDatabase(name string) (*DatabaseConfig, error) {
 	db, ok := c.Databases[name]

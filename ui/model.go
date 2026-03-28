@@ -43,6 +43,7 @@ const (
 	StateStatus
 	// Config
 	StateConfig
+	StateConfigForm
 	// Exit
 	StateQuit
 )
@@ -113,6 +114,12 @@ type AppModel struct {
 	// Install view
 	installResult string
 	installErr    error
+
+	// Config form
+	configFormFields []textinput.Model // [name, host, port, user, password, database, dbfDir]
+	configFormIdx    int               // focused field index
+	configEditingDB  string            // "" = new entry
+	configSaveErr    error
 
 	progressCh chan string
 }
@@ -366,6 +373,37 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// Config form: forward all keys to the focused field
+	if m.state == StateConfigForm {
+		return m.handleConfigFormKey(msg)
+	}
+
+	// Config menu: n = new, d = delete selected
+	if m.state == StateConfig {
+		switch msg.String() {
+		case "n", "N":
+			m.initConfigForm("")
+			m.state = StateConfigForm
+			return m, nil
+		case "d", "D":
+			var cmd tea.Cmd
+			m.list, cmd = m.list.Update(msg)
+			_ = cmd
+			if sel := m.list.SelectedItem(); sel != nil {
+				name := sel.(listItem).Value
+				if name != "" {
+					delete(m.config.Databases, name)
+					if m.config.Settings.DBFDirectories != nil {
+						delete(m.config.Settings.DBFDirectories, name)
+					}
+					_ = config.SaveConfig(m.resolvedConfigPath(), m.config)
+					m.loadConfigList()
+				}
+			}
+			return m, nil
+		}
+	}
+
 	return m, nil
 }
 
@@ -465,6 +503,16 @@ func (m *AppModel) handleEnter() (tea.Model, tea.Cmd) {
 	case StateInstallDone:
 		m.state = StateMainMenu
 
+	case StateConfig:
+		// Enter on a list item = edit that connection
+		if sel := m.list.SelectedItem(); sel != nil {
+			name := sel.(listItem).Value
+			if name != "" {
+				m.initConfigForm(name)
+				m.state = StateConfigForm
+			}
+		}
+
 	default:
 		return m, nil
 	}
@@ -518,7 +566,11 @@ func (m *AppModel) goBack() (tea.Model, tea.Cmd) {
 	case StateStatus:
 		m.state = StateMainMenu
 	case StateConfig:
+		m.loadMainMenu()
 		m.state = StateMainMenu
+	case StateConfigForm:
+		m.loadConfigList()
+		m.state = StateConfig
 	default:
 		m.state = StateMainMenu
 	}
@@ -546,6 +598,7 @@ func (m *AppModel) handleMainMenuEnter() (tea.Model, tea.Cmd) {
 	case "install":
 		m.state = StateInstalling
 	case "config":
+		m.loadConfigList()
 		m.state = StateConfig
 	case "quit":
 		return m, tea.Quit
@@ -738,6 +791,159 @@ func (m *AppModel) handleConfirm() (tea.Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.syncCancel = cancel
 	return m, tea.Batch(m.runSync(ctx), m.spinnerTickCmd(), progressListenerCmd(m.progressCh))
+}
+
+// resolvedConfigPath returns where to save the config file.
+func (m *AppModel) resolvedConfigPath() string {
+	if m.configPath != "" {
+		return m.configPath
+	}
+	return config.ResolveConfigPath()
+}
+
+// initConfigForm sets up the config form fields for add/edit.
+// Pass dbName="" for a new entry, or an existing name to edit.
+func (m *AppModel) initConfigForm(dbName string) {
+	labels := []string{"Nombre", "Host", "Puerto", "Usuario", "Contraseña", "Base de datos MySQL", "Directorio DBF (opcional)"}
+	fields := make([]textinput.Model, len(labels))
+	for i, label := range labels {
+		f := textinput.New()
+		f.Placeholder = label
+		f.Prompt = "  "
+		if i == 4 {
+			f.EchoMode = textinput.EchoPassword
+		}
+		fields[i] = f
+	}
+	// Prefill if editing
+	if dbName != "" {
+		db := m.config.Databases[dbName]
+		fields[0].SetValue(dbName)
+		fields[1].SetValue(db.Host)
+		fields[2].SetValue(fmt.Sprintf("%d", db.Port))
+		fields[3].SetValue(db.User)
+		fields[4].SetValue(db.Password)
+		fields[5].SetValue(db.Database)
+		if m.config.Settings.DBFDirectories != nil {
+			fields[6].SetValue(m.config.Settings.DBFDirectories[dbName])
+		}
+	} else {
+		fields[2].SetValue("3306")
+	}
+	fields[0].Focus()
+	m.configFormFields = fields
+	m.configFormIdx = 0
+	m.configEditingDB = dbName
+	m.configSaveErr = nil
+}
+
+// saveConfigForm reads the form values, validates, saves to disk, and reloads config.
+func (m *AppModel) saveConfigForm() error {
+	name := strings.TrimSpace(m.configFormFields[0].Value())
+	host := strings.TrimSpace(m.configFormFields[1].Value())
+	portStr := strings.TrimSpace(m.configFormFields[2].Value())
+	user := strings.TrimSpace(m.configFormFields[3].Value())
+	password := m.configFormFields[4].Value()
+	database := strings.TrimSpace(m.configFormFields[5].Value())
+	dbfDir := strings.TrimSpace(m.configFormFields[6].Value())
+
+	if name == "" || host == "" || user == "" || database == "" {
+		return fmt.Errorf("nombre, host, usuario y base de datos son obligatorios")
+	}
+
+	var port int
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil || port <= 0 {
+		return fmt.Errorf("puerto inválido")
+	}
+
+	// Remove old key if renamed
+	if m.configEditingDB != "" && m.configEditingDB != name {
+		delete(m.config.Databases, m.configEditingDB)
+		if m.config.Settings.DBFDirectories != nil {
+			delete(m.config.Settings.DBFDirectories, m.configEditingDB)
+		}
+	}
+
+	if m.config.Databases == nil {
+		m.config.Databases = make(map[string]config.DatabaseConfig)
+	}
+	m.config.Databases[name] = config.DatabaseConfig{
+		Host:     host,
+		Port:     port,
+		User:     user,
+		Password: password,
+		Database: database,
+	}
+
+	if dbfDir != "" {
+		if m.config.Settings.DBFDirectories == nil {
+			m.config.Settings.DBFDirectories = make(map[string]string)
+		}
+		m.config.Settings.DBFDirectories[name] = dbfDir
+	}
+
+	path := m.resolvedConfigPath()
+	if err := config.SaveConfig(path, m.config); err != nil {
+		return err
+	}
+	m.configPath = path
+	m.engine = syncer.NewEngine(m.config)
+	return nil
+}
+
+// handleConfigFormKey handles keyboard input while in the config form.
+func (m *AppModel) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "tab", "down":
+		m.configFormFields[m.configFormIdx].Blur()
+		m.configFormIdx = (m.configFormIdx + 1) % len(m.configFormFields)
+		m.configFormFields[m.configFormIdx].Focus()
+	case "shift+tab", "up":
+		m.configFormFields[m.configFormIdx].Blur()
+		m.configFormIdx = (m.configFormIdx - 1 + len(m.configFormFields)) % len(m.configFormFields)
+		m.configFormFields[m.configFormIdx].Focus()
+	case "enter", "Enter":
+		if m.configFormIdx < len(m.configFormFields)-1 {
+			// Move to next field
+			m.configFormFields[m.configFormIdx].Blur()
+			m.configFormIdx++
+			m.configFormFields[m.configFormIdx].Focus()
+		} else {
+			// Last field — save
+			if err := m.saveConfigForm(); err != nil {
+				m.configSaveErr = err
+			} else {
+				m.loadConfigList()
+				m.state = StateConfig
+			}
+		}
+	case "ctrl+s":
+		if err := m.saveConfigForm(); err != nil {
+			m.configSaveErr = err
+		} else {
+			m.loadConfigList()
+			m.state = StateConfig
+		}
+	default:
+		var cmd tea.Cmd
+		m.configFormFields[m.configFormIdx], cmd = m.configFormFields[m.configFormIdx].Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+// loadConfigList loads the database list for the config menu.
+func (m *AppModel) loadConfigList() {
+	items := make([]list.Item, 0, len(m.config.Databases)+1)
+	for name := range m.config.Databases {
+		db := m.config.Databases[name]
+		display := fmt.Sprintf("%-14s  %s:%d / %s", name, db.Host, db.Port, db.Database)
+		items = append(items, listItem{Display: display, Value: name})
+	}
+	if len(items) == 0 {
+		items = append(items, listItem{Display: "(sin conexiones — presioná N para agregar)", Value: ""})
+	}
+	m.list.SetItems(items)
 }
 
 // loadDatabases loads databases into the list
