@@ -141,8 +141,12 @@ func NewAppModel(configPath, version string) *AppModel {
 	if err != nil {
 		cfg = &config.Config{
 			Databases: make(map[string]config.DatabaseConfig),
-			Tables:    make(map[string]config.TableConfig),
+			Tables:    config.DefaultTables(),
 		}
+	} else if len(cfg.Tables) == 0 {
+		// Config exists but has no tables (e.g. user only saved DB credentials via TUI).
+		// Inject production defaults so sync modes work correctly.
+		cfg.Tables = config.DefaultTables()
 	}
 
 	// Create default file browser starting point
@@ -890,6 +894,10 @@ func (m *AppModel) saveConfigForm() error {
 
 	if m.config.Databases == nil {
 		m.config.Databases = make(map[string]config.DatabaseConfig)
+	}
+	// Ensure table configs are never lost when saving credentials
+	if len(m.config.Tables) == 0 {
+		m.config.Tables = config.DefaultTables()
 	}
 	m.config.Databases[name] = config.DatabaseConfig{
 		Host:     host,

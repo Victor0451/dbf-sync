@@ -145,6 +145,58 @@ func mustParseInt(s string) int {
 	return n
 }
 
+// DefaultTables returns the production table configs used when no config file exists yet.
+// This ensures the app works correctly even if the user only configured DB credentials.
+func DefaultTables() map[string]TableConfig {
+	return map[string]TableConfig{
+		"pagos": {
+			Mode:            "upsert",
+			MatchKeys:       []string{"SERIE", "NRO_RECIBO", "DIA_EMI"},
+			UpdateWindow:    "current_month",
+			UpdateDateField: "DIA_EMI",
+			UpdateSeries:    []int{2, 22},
+			Cobrador: map[string]interface{}{
+				"serie":             []interface{}{2, 22},
+				"movim_pending":     "N",
+				"movim_settled":     "P",
+				"movim_cancelled":   "A",
+				"dia_emi_field":     "DIA_EMI",
+			},
+		},
+		"pago_bco": {
+			Mode:      "append",
+			MatchKeys: []string{"CONTRATO", "MES", "ANO"},
+		},
+		"maestro": {
+			Mode:      "append",
+			MatchKeys: []string{"CONTRATO"},
+			PostInsert: []PostRule{
+				{Set: map[string]interface{}{"ESTADO": 1}},
+			},
+		},
+		"adherent": {
+			Mode:      "upsert",
+			MatchKeys: []string{"CONTRATO", "NRO_DOC"},
+			PostInsert: []PostRule{
+				{Set: map[string]interface{}{"ESTADO": 1}, When: "BAJA IS NULL"},
+				{Set: map[string]interface{}{"ESTADO": 0}, When: "BAJA IS NOT NULL"},
+			},
+			PostUpdate: []PostRule{
+				{Set: map[string]interface{}{"ESTADO": 1}, When: "BAJA IS NULL"},
+				{Set: map[string]interface{}{"ESTADO": 0}, When: "BAJA IS NOT NULL"},
+			},
+		},
+		"cuo_fija": {
+			Mode:      "upsert",
+			MatchKeys: []string{"CONTRATO"},
+		},
+		"bajas": {
+			Mode:      "append",
+			MatchKeys: []string{"CONTRATO"},
+		},
+	}
+}
+
 // ResolveConfigPath returns the path where config should be saved when none is specified.
 func ResolveConfigPath() string {
 	if home := os.Getenv("HOME"); home != "" {
