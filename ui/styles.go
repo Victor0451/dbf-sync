@@ -94,3 +94,14 @@ var (
 
 // Progress bar style
 var ProgressStyle = lipgloss.NewStyle().Foreground(Accent)
+
+// Progress bar specific styles
+var (
+	ProgressBarFillStyle = lipgloss.NewStyle().Foreground(Primary) // "█" characters
+	ProgressBarEmptyStyle = lipgloss.NewStyle().Foreground(Muted)  // "░" characters
+	ProgressETAStyle = lipgloss.NewStyle().Foreground(Accent)      // ETA text
+	ProgressSpeedStyle = lipgloss.NewStyle().Foreground(Primary)   // Speed text "rec/s"
+	ProgressErrorBannerStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#FF6B6B")) // Red for error count
+)

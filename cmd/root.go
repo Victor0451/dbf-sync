@@ -2,12 +2,22 @@ package cmd
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
+	"dbf-sync/internal/logger"
+	"dbf-sync/metrics"
+	"dbf-sync/sync"
 	"dbf-sync/ui"
+)
+
+// Log format and level flags
+var (
+	logFormat string
+	logLevel  string
 )
 
 // Verbose flag
@@ -31,22 +41,48 @@ Powered by VML PROGRAMMING 🐉`, appVersion, appCommit, appBuildDate),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// If no subcommand, launch interactive mode
 		configPath := GetConfigPath(cmd)
+
+		// Redirect logs to a file in interactive mode to avoid UI corruption
+		logFile, err := os.OpenFile("dbf-sync.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		if err == nil {
+			defer logFile.Close()
+			logger.InitWithOutput("text", logLevel, logFile)
+			slog.Info("Starting interactive mode (logs redirected to file)")
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: could not open log file: %v\n", err)
+		}
+
 		model := ui.NewAppModel(configPath, appVersion)
 		p := tea.NewProgram(model)
-		_, err := p.Run()
+		_, err = p.Run()
 		return err
 	},
 }
 
 // Execute runs the root command
 func Execute() error {
-	return rootCmd.Execute()
+	// Initialize logger before any command execution
+	if err := logger.Init(logFormat, logLevel); err != nil {
+		// Fall back to stderr output if logger init fails
+		fmt.Fprintf(os.Stderr, "Warning: failed to initialize logger: %v\n", err)
+	}
+
+	// Execute the root command (which may run interactive mode or a subcommand)
+	err := rootCmd.Execute()
+
+	// Cleanup: ensure any global metrics collector is reset
+	// This is important for proper lifecycle management across commands
+	sync.SetGlobalCollector(metrics.NopCollector)
+
+	return err
 }
 
 func init() {
 	// Global persistent flags
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 	rootCmd.PersistentFlags().StringP("config", "c", "", "path to config file (default: ./config.yaml or $HOME/.dbf-sync/config.yaml)")
+	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "text", "log format: text or json")
+	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "log level: debug, info, warn, or error")
 }
 
 // SetVersionInfo receives version data from main.go and configures cobra

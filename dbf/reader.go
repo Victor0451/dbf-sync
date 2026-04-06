@@ -81,6 +81,9 @@ var defaultOpenOptions = &DBFOpenOptions{
 func OpenDBF(path string, opts ...DBFOpenOptions) (*DBFFile, error) {
 	file, err := os.Open(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: %v", ErrFileNotFound, err)
+		}
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
 
@@ -103,7 +106,7 @@ func OpenDBF(path string, opts ...DBFOpenOptions) (*DBFFile, error) {
 	// Read and parse header
 	if err := dbf.readHeader(); err != nil {
 		dbf.Close()
-		return nil, fmt.Errorf("failed to read header: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrInvalidFormat, err)
 	}
 
 	dbf.recordLength = int(dbf.header.recordLength)
@@ -116,7 +119,7 @@ func OpenDBF(path string, opts ...DBFOpenOptions) (*DBFFile, error) {
 func (d *DBFFile) readHeader() error {
 	headerBytes := make([]byte, 32)
 	if _, err := io.ReadFull(d.file, headerBytes); err != nil {
-		return fmt.Errorf("failed to read header: %w", err)
+		return fmt.Errorf("%w: %v", ErrInvalidFormat, err)
 	}
 
 	header := &dbfHeader{
@@ -131,7 +134,7 @@ func (d *DBFFile) readHeader() error {
 
 	// Validate version
 	if header.version != 0x03 && header.version != 0x83 && header.version != 0x8B {
-		return fmt.Errorf("unsupported DBF version: 0x%02X (only dBase III supported)", header.version)
+		return fmt.Errorf("%w: unsupported DBF version: 0x%02X (only dBase III supported)", ErrInvalidFormat, header.version)
 	}
 
 	d.header = header
@@ -144,7 +147,7 @@ func (d *DBFFile) readHeader() error {
 	for i := 0; i < fieldCount; i++ {
 		fieldBytes := make([]byte, 32)
 		if _, err := io.ReadFull(d.file, fieldBytes); err != nil {
-			return fmt.Errorf("failed to read field definition: %w", err)
+			return fmt.Errorf("%w: %v", ErrInvalidFormat, err)
 		}
 
 		// Field name is null-terminated
@@ -165,7 +168,9 @@ func (d *DBFFile) readHeader() error {
 
 	// Skip to end of header (may include field descriptor array terminator 0x0D)
 	headerTerminator := make([]byte, 1)
-	d.file.Read(headerTerminator)
+	if _, err := d.file.Read(headerTerminator); err != nil {
+		return fmt.Errorf("failed to read header terminator: %w", err)
+	}
 
 	return nil
 }
@@ -226,46 +231,47 @@ func (d *DBFFile) ReadFiltered(filter func(DBFRecord) bool) ([]DBFRecord, error)
 // ReadNext reads the next record from the DBF file
 // Returns nil when end of file is reached
 func (d *DBFFile) ReadNext() (DBFRecord, error) {
-	// Check if we've read all records
-	if d.recordsRead >= int(d.header.recordCount) {
-		return nil, nil
-	}
-
-	// Read record
-	recordBytes := make([]byte, d.recordLength)
-	n, err := io.ReadFull(d.file, recordBytes)
-	if err != nil {
-		if err == io.EOF || n == 0 {
+	for {
+		// Check if we've read all records
+		if d.recordsRead >= int(d.header.recordCount) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("failed to read record: %w", err)
-	}
 
-	d.recordsRead++
-
-	// Check if deleted
-	if recordBytes[0] == '*' {
-		// Skip deleted records
-		return d.ReadNext()
-	}
-
-	// Parse fields
-	record := make(DBFRecord)
-	offset := 1 // Skip deletion flag
-
-	for _, field := range d.fields {
-		if offset >= len(recordBytes) {
-			break
+		// Read record
+		recordBytes := make([]byte, d.recordLength)
+		n, err := io.ReadFull(d.file, recordBytes)
+		if err != nil {
+			if err == io.EOF || n == 0 {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("failed to read record: %w", err)
 		}
 
-		fieldData := recordBytes[offset : offset+int(field.length)]
-		value := d.parseFieldValue(field, fieldData)
-		record[field.name] = value
+		d.recordsRead++
 
-		offset += int(field.length)
+		// Check if deleted — skip without recursing
+		if recordBytes[0] == '*' {
+			continue
+		}
+
+		// Parse fields
+		record := make(DBFRecord)
+		offset := 1 // Skip deletion flag
+
+		for _, field := range d.fields {
+			if offset >= len(recordBytes) {
+				break
+			}
+
+			fieldData := recordBytes[offset : offset+int(field.length)]
+			value := d.parseFieldValue(field, fieldData)
+			record[field.name] = value
+
+			offset += int(field.length)
+		}
+
+		return record, nil
 	}
-
-	return record, nil
 }
 
 // parseFieldValue converts raw field data to appropriate Go type

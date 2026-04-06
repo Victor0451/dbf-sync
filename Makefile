@@ -1,5 +1,5 @@
 APP     := dbf-sync
-VERSION := 1.0.4
+VERSION := 1.1.0
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X main.version=$(VERSION) -X main.buildDate=$(DATE) -X main.commit=$(COMMIT)

@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"dbf-sync/config"
+	"dbf-sync/metrics"
 	"dbf-sync/sync"
 )
 
@@ -60,6 +61,32 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Initialize metrics server and collector before sync starts
+	var metricsServer *metrics.Server
+	var collector metrics.Collector = metrics.NopCollector
+
+	if cfg.Metrics.Enabled {
+		collector = metrics.NewCollector()
+		metricsServer = metrics.NewServer(
+			cfg.Metrics.Port,
+			cfg.Metrics.Enabled,
+			collector,
+			nil, // no DB for resource sampling in CLI
+		)
+		if err := metricsServer.Start(); err != nil {
+			PrintWarning("Failed to start metrics server: %v", err)
+		} else {
+			PrintInfo("Metrics server started on port %d", cfg.Metrics.Port)
+		}
+		// Set global collector for the sync engine to use
+		sync.SetGlobalCollector(collector)
+	}
+
+	// Ensure metrics server is shutdown on exit
+	if metricsServer != nil {
+		defer metricsServer.Shutdown()
+	}
+
 	dbCfg, err := cfg.GetDatabase(syncDB)
 	if err != nil {
 		PrintError("Database %q not found in config", syncDB)
@@ -75,9 +102,13 @@ func runSync(cmd *cobra.Command, args []string) error {
 	engine := sync.NewEngine(cfg)
 
 	opts := sync.SyncOptions{
-		Mode:     syncMode,
-		DryRun:   syncDryRun,
-		Progress: func(s string) { fmt.Print(s) },
+		Mode:   syncMode,
+		DryRun: syncDryRun,
+		Progress: func(pu sync.ProgressUpdate) {
+			if pu.Total > 0 {
+				fmt.Printf("\r  Sincronizando: %d / %d (%.0f rec/s)    ", pu.Current, pu.Total, pu.Speed)
+			}
+		},
 	}
 
 	PrintInfo("Starting sync: %s → %s", syncFile, syncTable)

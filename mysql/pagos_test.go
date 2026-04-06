@@ -118,3 +118,159 @@ func TestFilterRecordToColumns(t *testing.T) {
 		})
 	}
 }
+
+func TestDeduplicateByKey(t *testing.T) {
+	now := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name           string
+		records        []dbf.DBFRecord
+		matchKeys      []string
+		expectedCount  int
+		expectedDupes  int
+		expectedFirst  dbf.DBFRecord // first record with given key in output
+		expectedLast   dbf.DBFRecord // last record with given key in output (for last-wins)
+	}{
+		{
+			name: "no duplicates - all unique keys",
+			records: []dbf.DBFRecord{
+				{"SERIE": int64(1), "NRO_RECIBO": int64(100)},
+				{"SERIE": int64(1), "NRO_RECIBO": int64(101)},
+				{"SERIE": int64(1), "NRO_RECIBO": int64(102)},
+			},
+			matchKeys:     []string{"SERIE", "NRO_RECIBO"},
+			expectedCount: 3,
+			expectedDupes: 0,
+		},
+		{
+			name: "2 duplicates same key",
+			records: []dbf.DBFRecord{
+				{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(100.00)},
+				{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(200.00)}, // duplicate
+				{"SERIE": int64(1), "NRO_RECIBO": int64(101), "MONTO": float64(300.00)},
+			},
+			matchKeys:     []string{"SERIE", "NRO_RECIBO"},
+			expectedCount: 2,
+			expectedDupes: 1,
+			expectedLast:  dbf.DBFRecord{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(200.00)},
+		},
+		{
+			name: "3 records same key",
+			records: []dbf.DBFRecord{
+				{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(100.00)},
+				{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(200.00)}, // duplicate 1
+				{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(300.00)}, // duplicate 2
+			},
+			matchKeys:     []string{"SERIE", "NRO_RECIBO"},
+			expectedCount: 1,
+			expectedDupes: 2,
+			expectedLast:  dbf.DBFRecord{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(300.00)},
+		},
+		{
+			name: "all same key",
+			records: []dbf.DBFRecord{
+				{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(100.00)},
+				{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(200.00)},
+				{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(300.00)},
+				{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(400.00)},
+				{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(500.00)},
+			},
+			matchKeys:     []string{"SERIE", "NRO_RECIBO"},
+			expectedCount: 1,
+			expectedDupes: 4,
+			expectedLast:  dbf.DBFRecord{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(500.00)},
+		},
+		{
+			name:           "empty input",
+			records:        []dbf.DBFRecord{},
+			matchKeys:      []string{"SERIE", "NRO_RECIBO"},
+			expectedCount:  0,
+			expectedDupes:  0,
+		},
+		{
+			name: "nil key fields preserved",
+			records: []dbf.DBFRecord{
+				{"SERIE": nil, "NRO_RECIBO": int64(100)},   // nil key - should be preserved
+				{"SERIE": int64(1), "NRO_RECIBO": int64(101)},
+				{"SERIE": nil, "NRO_RECIBO": int64(102)},   // nil key - should be preserved
+			},
+			matchKeys:     []string{"SERIE", "NRO_RECIBO"},
+			expectedCount: 3,
+			expectedDupes: 0,
+		},
+		{
+			name: "out of order duplicates",
+			records: []dbf.DBFRecord{
+				{"SERIE": int64(1), "NRO_RECIBO": int64(101), "MONTO": float64(101.00)},
+				{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(100.00)},
+				{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(200.00)}, // duplicate
+				{"SERIE": int64(1), "NRO_RECIBO": int64(102), "MONTO": float64(102.00)},
+				{"SERIE": int64(1), "NRO_RECIBO": int64(101), "MONTO": float64(301.00)}, // duplicate
+			},
+			matchKeys:     []string{"SERIE", "NRO_RECIBO"},
+			expectedCount: 3,
+			expectedDupes: 2,
+			// Last occurrence of key 100 should have 200.00
+			expectedLast: dbf.DBFRecord{"SERIE": int64(1), "NRO_RECIBO": int64(100), "MONTO": float64(200.00)},
+		},
+		{
+			name: "single match key with duplicates",
+			records: []dbf.DBFRecord{
+				{"ID": "abc", "VALUE": "first"},
+				{"ID": "abc", "VALUE": "second"},
+				{"ID": "xyz", "VALUE": "third"},
+			},
+			matchKeys:     []string{"ID"},
+			expectedCount: 2,
+			expectedDupes: 1,
+			expectedLast:  dbf.DBFRecord{"ID": "abc", "VALUE": "second"},
+		},
+		{
+			name: "with date key",
+			records: []dbf.DBFRecord{
+				{"SERIE": int64(1), "NRO_RECIBO": int64(100), "DIA_EMI": now, "MONTO": float64(100.00)},
+				{"SERIE": int64(1), "NRO_RECIBO": int64(100), "DIA_EMI": now, "MONTO": float64(200.00)},
+				{"SERIE": int64(1), "NRO_RECIBO": int64(101), "DIA_EMI": now, "MONTO": float64(300.00)},
+			},
+			matchKeys:     []string{"SERIE", "NRO_RECIBO", "DIA_EMI"},
+			expectedCount: 2,
+			expectedDupes: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deduped, dupCount := deduplicateByKey(tt.records, tt.matchKeys)
+
+			if len(deduped) != tt.expectedCount {
+				t.Errorf("deduplicateByKey() returned %d records, want %d", len(deduped), tt.expectedCount)
+			}
+
+			if dupCount != tt.expectedDupes {
+				t.Errorf("deduplicateByKey() duplicate count = %d, want %d", dupCount, tt.expectedDupes)
+			}
+
+			// Verify last-wins behavior
+			if tt.expectedLast != nil && len(deduped) > 0 {
+				// Find the record matching expectedLast
+				found := false
+				for _, rec := range deduped {
+					match := true
+					for k, v := range tt.expectedLast {
+						if rec[k] != v {
+							match = false
+							break
+						}
+					}
+					if match {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected last record with values %v not found in output", tt.expectedLast)
+				}
+			}
+		})
+	}
+}

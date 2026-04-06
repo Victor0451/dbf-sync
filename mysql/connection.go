@@ -43,7 +43,7 @@ func NewConnection(cfg config.DatabaseConfig) (*MySQLConnection, error) {
 	// Open connection
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
 	}
 
 	// Configure connection pool
@@ -56,7 +56,7 @@ func NewConnection(cfg config.DatabaseConfig) (*MySQLConnection, error) {
 	defer cancel()
 
 	if err := db.PingContext(ctx); err != nil {
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrConnectionFailed, err)
 	}
 
 	return &MySQLConnection{
@@ -91,7 +91,7 @@ func (m *MySQLConnection) GetLastRecordID(table, idField string) (int64, error) 
 	var maxID int64
 	err := m.db.QueryRow(query).Scan(&maxID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get last record ID: %w", err)
+		return 0, fmt.Errorf("%w: %v", ErrQueryFailed, err)
 	}
 
 	return maxID, nil
@@ -108,7 +108,7 @@ func (m *MySQLConnection) GetColumnNames(table string) ([]string, error) {
 
 	rows, err := m.db.Query(query, m.config.Database, table)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get column names: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrQueryFailed, err)
 	}
 	defer rows.Close()
 
@@ -139,7 +139,7 @@ func (m *MySQLConnection) GetRecordCount(table string) (int64, error) {
 	var count int64
 	err := m.db.QueryRow(query, table).Scan(&count)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get record count: %w", err)
+		return 0, fmt.Errorf("%w: %v", ErrQueryFailed, err)
 	}
 
 	return count, nil

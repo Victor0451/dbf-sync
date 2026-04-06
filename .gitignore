@@ -5,6 +5,9 @@ config/config.yaml
 dbf-sync
 dbf-sync.exe
 
+# SDD infrastructure
+.atl/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -3,78 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
-	"time"
 )
-
-// SyncSummary holds the results of a sync operation
-type SyncSummary struct {
-	Database      string
-	Table         string
-	Action        string
-	Period        string // e.g., "03/2026" for cobrador updates
-	RecordsBefore int    // NEW - count before sync
-	Inserted      int
-	Updated       int
-	Skipped       int
-	Errors        int
-	RecordsAfter  int    // NEW - count after sync
-	Duration      time.Duration
-}
-
-// Print displays the sync summary in a formatted box
-func (s *SyncSummary) Print() {
-	// Format duration
-	durationStr := s.formatDuration(s.Duration)
-
-	// Format numbers with thousands separator
-	beforeStr := formatNumber(s.RecordsBefore)
-	afterStr := formatNumber(s.RecordsAfter)
-
-	// Build the box content
-	lines := []string{
-		"╔══════════════════════════════════════════╗",
-		"║           SYNC SUMMARY                     ║",
-		"╠══════════════════════════════════════════╣",
-		fmt.Sprintf("║  Database:    %-26s ║", s.Database),
-		fmt.Sprintf("║  Table:       %-26s ║", s.Table),
-		fmt.Sprintf("║  Action:      %-26s ║", s.Action),
-	}
-
-	// Add period if present
-	if s.Period != "" {
-		lines = append(lines, fmt.Sprintf("║  Period:      %-26s ║", s.Period))
-	}
-
-	lines = append(lines,
-		"╠══════════════════════════════════════════╣",
-		fmt.Sprintf("║  %s ANTES:     %-25s ║", "📊", beforeStr+" registros"),
-		fmt.Sprintf("║  %s Inserted:  %-25d ║", "✅", s.Inserted),
-		fmt.Sprintf("║  %s Updated:   %-25d ║", "🔄", s.Updated),
-		fmt.Sprintf("║  %s Skipped:   %-25d ║", "⏭️ ", s.Skipped),
-		fmt.Sprintf("║  %s DESPUÉS:   %-25s ║", "📊", afterStr+" registros"),
-		fmt.Sprintf("║  %s Errors:    %-25d ║", "❌", s.Errors),
-		"╠══════════════════════════════════════════╣",
-		fmt.Sprintf("║  Duration:    %-26s ║", durationStr),
-		"╚══════════════════════════════════════════╝",
-	)
-
-	for _, line := range lines {
-		fmt.Println(line)
-	}
-}
-
-// formatDuration formats duration for display
-func (s *SyncSummary) formatDuration(d time.Duration) string {
-	if d < time.Second {
-		return fmt.Sprintf("%.0fms", float64(d.Milliseconds()))
-	}
-	if d < time.Minute {
-		return fmt.Sprintf("%.1fs", d.Seconds())
-	}
-	m := int(d.Minutes())
-	sec := int(d.Seconds()) % 60
-	return fmt.Sprintf("%dm %ds", m, sec)
-}
 
 // formatNumberView formats a number with thousands separator (for views)
 func formatNumberView(n int) string {

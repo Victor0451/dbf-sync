@@ -12,6 +12,43 @@ settings:
   dbf_directories:
     my_database: /path/to/dbf/files/
 
+  # ═══════════════════════════════════════════════════
+  # PROFILES — named configuration presets
+  # ═══════════════════════════════════════════════════
+  profiles:
+    # Example: Production environment
+    # Use via: dbf-sync --profile production
+    production:
+      settings:
+        dbf_directories:
+          my_database: /prod/dbf/files/
+      tables:
+        my_table:
+          mode: upsert
+          match_keys: [ID]
+        payments:
+          mode: upsert
+          match_keys: [SERIE, NRO_RECIBO, DIA_EMI]
+          update_window: current_month
+          update_date_field: DIA_EMI
+
+    # Example: Development environment
+    development:
+      settings:
+        dbf_directories:
+          my_database: /dev/dbf/files/
+      tables:
+        my_table:
+          mode: upsert
+          match_keys: [ID]
+        # Override: use append mode in dev (safer)
+        payments:
+          mode: append
+          match_keys: [SERIE, NRO_RECIBO, DIA_EMI]
+
+  # Optional: active profile (set via TUI or CLI)
+  # active_profile: production
+
 tables:
   # ═══════════════════════════════════════════════════
   # UPSERT — insert new + update existing

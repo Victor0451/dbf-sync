@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -44,6 +43,8 @@ const (
 	// Config
 	StateConfig
 	StateConfigForm
+	// Profile
+	StateSelectProfile
 	// Exit
 	StateQuit
 )
@@ -58,7 +59,9 @@ type SyncResult struct {
 	Inserted      int
 	Updated       int
 	Skipped       int
+	Duplicates    int
 	Errors        int
+	SyncErrors    []syncer.SyncError
 	ErrorMessages []string
 	RecordsAfter  int
 	Duration      time.Duration
@@ -94,9 +97,10 @@ type AppModel struct {
 	cursor      int
 
 	// UI components
-	list      list.Model
-	spinner    spinner.Model
-	textInput  textinput.Model
+	list          list.Model
+	spinner       spinner.Model
+	textInput     textinput.Model
+	progressModel progressModel
 
 	// State
 	err         error
@@ -125,7 +129,13 @@ type AppModel struct {
 	configEditingDB  string            // "" = new entry
 	configSaveErr    error
 
-	progressCh chan string
+	// Profile selection
+	profileCursor int
+
+	progressCh      chan syncer.ProgressUpdate
+	syncErrorCh     chan syncer.SyncError
+	errorCount      int // count of errors received during processing
+	errorScrollOffset int // scroll offset for error list in summary view
 }
 
 // statusResult holds the connection test result for one database
@@ -147,6 +157,14 @@ func NewAppModel(configPath, version string) *AppModel {
 		// Config exists but has no tables (e.g. user only saved DB credentials via TUI).
 		// Inject production defaults so sync modes work correctly.
 		cfg.Tables = config.DefaultTables()
+	}
+
+	// Apply active profile if set
+	if cfg.Settings.ActiveProfile != "" {
+		if err := cfg.ApplyProfile(cfg.Settings.ActiveProfile); err != nil {
+			// Log error but continue with base config
+			// Could add error reporting UI later
+		}
 	}
 
 	// Create default file browser starting point
@@ -214,13 +232,26 @@ func (m *AppModel) spinnerTickCmd() tea.Cmd {
 
 // progressListenerCmd reads one progress message from the channel and returns it as a tea.Msg.
 // Call it again in Update to keep listening for the next message.
-func progressListenerCmd(ch <-chan string) tea.Cmd {
+func progressListenerCmd(ch <-chan syncer.ProgressUpdate) tea.Cmd {
 	return func() tea.Msg {
-		text, ok := <-ch
+		update, ok := <-ch
 		if !ok {
 			return progressDoneMsg{}
 		}
-		return progressMsg{text: text}
+		return progressMsg{update: update}
+	}
+}
+
+// errorListenerCmd blocks on the error channel waiting for the next error (or close).
+// Mirrors progressListenerCmd so BubbleTea keeps rescheduling it until the channel closes.
+func errorListenerCmd(ch <-chan syncer.SyncError) tea.Cmd {
+	return func() tea.Msg {
+		_, ok := <-ch
+		if !ok {
+			// Channel closed — no more errors coming
+			return errorCountMsg{count: 0, done: true}
+		}
+		return errorCountMsg{count: 1}
 	}
 }
 
@@ -239,6 +270,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.ready = true
 		m.list.SetSize(msg.Width-4, msg.Height-8)
+		// Update progress bar width
+		m.progressModel.Model.SetWidth(msg.Width - 10)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -261,15 +294,24 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadTables()
 
 	case progressMsg:
-		m.loadingMsg = msg.text
-		return m, progressListenerCmd(m.progressCh)
+		m.progressModel.updateProgress(msg.update)
+		m.loadingMsg = fmt.Sprintf("%d / %d", msg.update.Current, msg.update.Total)
+		return m, tea.Batch(progressListenerCmd(m.progressCh), errorListenerCmd(m.syncErrorCh))
 
 	case progressDoneMsg:
 		// channel closed, sync finished — syncDoneMsg will follow
 
+	case errorCountMsg:
+		m.errorCount += msg.count
+		// Keep listening unless the channel was closed
+		if !msg.done && m.syncErrorCh != nil {
+			return m, errorListenerCmd(m.syncErrorCh)
+		}
+
 	case syncDoneMsg:
 		m.loading = false
 		m.state = StateSummary
+		m.errorScrollOffset = 0 // Reset error scroll when entering summary
 
 	case statusReadyMsg:
 		m.loading = false
@@ -340,6 +382,47 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				_ = config.SaveConfig(m.resolvedConfigPath(), m.config)
 				m.loadConfigList()
 			}
+		}
+		return m, nil
+	}
+
+	// Profile selection: custom cursor handling
+	if m.state == StateSelectProfile {
+		switch msg.String() {
+		case "esc", "Escape":
+			m.loadMainMenu()
+			m.state = StateMainMenu
+		case "up", "k":
+			if m.profileCursor > 0 {
+				m.profileCursor--
+			}
+		case "down", "j":
+			// +1 for "(ninguno)" option
+			if m.profileCursor < len(m.config.ProfileNames()) {
+				m.profileCursor++
+			}
+		case "enter", "Enter":
+			// Apply selected profile
+			profileNames := m.config.ProfileNames()
+			var profileName string
+			if m.profileCursor == 0 {
+				// First option is "(ninguno)" - clear active profile
+				profileName = ""
+			} else {
+				profileName = profileNames[m.profileCursor-1]
+			}
+			// Apply profile to config
+			if err := m.config.ApplyProfile(profileName); err != nil {
+				m.err = err
+			} else {
+				// Save active profile setting
+				m.config.Settings.ActiveProfile = profileName
+				_ = config.SaveConfig(m.resolvedConfigPath(), m.config)
+				// Recreate engine with new config
+				m.engine = syncer.NewEngine(m.config)
+			}
+			m.loadMainMenu()
+			m.state = StateMainMenu
 		}
 		return m, nil
 	}
@@ -425,6 +508,12 @@ func (m *AppModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = StateManualPath
 			m.textInput.Focus()
 		}
+
+	case "p", "P":
+		if m.state == StateMainMenu {
+			m.state = StateSelectProfile
+			m.profileCursor = 0
+		}
 	}
 
 	// Table search: forward printable single chars to filter
@@ -456,6 +545,17 @@ func (m *AppModel) moveUp() (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(tea.KeyPressMsg{Code: 'k'})
 		return m, cmd
+	case StateSelectProfile:
+		if m.profileCursor > 0 {
+			m.profileCursor--
+		}
+	case StateSummary:
+		// Scroll up in error list if there are errors
+		if m.result != nil && len(m.result.SyncErrors) > 0 {
+			if m.errorScrollOffset > 0 {
+				m.errorScrollOffset--
+			}
+		}
 	}
 	return m, nil
 }
@@ -471,6 +571,22 @@ func (m *AppModel) moveDown() (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(tea.KeyPressMsg{Code: 'j'})
 		return m, cmd
+	case StateSelectProfile:
+		// +1 for "(ninguno)" option
+		if m.profileCursor < len(m.config.ProfileNames()) {
+			m.profileCursor++
+		}
+	case StateSummary:
+		// Scroll down in error list if there are errors
+		if m.result != nil && len(m.result.SyncErrors) > 0 {
+			maxOffset := len(m.result.SyncErrors) - 5
+			if maxOffset < 0 {
+				maxOffset = 0
+			}
+			if m.errorScrollOffset < maxOffset {
+				m.errorScrollOffset++
+			}
+		}
 	}
 	return m, nil
 }
@@ -556,6 +672,10 @@ func (m *AppModel) goBack() (tea.Model, tea.Cmd) {
 		m.state = StateMainMenu
 	case StateSelectTable:
 		m.tableSearch = ""
+		if m.conn != nil {
+			m.conn.Close()
+			m.conn = nil
+		}
 		m.loadDatabases()
 		m.state = StateSelectDB
 	case StateSelectAction:
@@ -599,6 +719,9 @@ func (m *AppModel) goBack() (tea.Model, tea.Cmd) {
 	case StateConfigForm:
 		m.loadConfigList()
 		m.state = StateConfig
+	case StateSelectProfile:
+		m.loadMainMenu()
+		m.state = StateMainMenu
 	default:
 		m.state = StateMainMenu
 	}
@@ -623,6 +746,9 @@ func (m *AppModel) handleMainMenuEnter() (tea.Model, tea.Cmd) {
 		m.loading = true
 		m.statusResults = nil
 		return m, tea.Batch(m.checkConnections(), m.spinnerTickCmd())
+	case "profiles":
+		m.state = StateSelectProfile
+		m.profileCursor = 0
 	case "install":
 		m.state = StateInstalling
 	case "config":
@@ -815,10 +941,14 @@ func (m *AppModel) handleConfirm() (tea.Model, tea.Cmd) {
 	m.loading = true
 	m.loadingMsg = "Iniciando..."
 	m.state = StateProcessing
-	m.progressCh = make(chan string, 30)
+	m.progressCh = make(chan syncer.ProgressUpdate, 200)
+	m.syncErrorCh = make(chan syncer.SyncError, 200)
+	m.progressModel = newProgressModel(0)
+	m.progressModel.Model.SetWidth(m.width - 10)
+	m.errorCount = 0
 	ctx, cancel := context.WithCancel(context.Background())
 	m.syncCancel = cancel
-	return m, tea.Batch(m.runSync(ctx), m.spinnerTickCmd(), progressListenerCmd(m.progressCh))
+	return m, tea.Batch(m.runSync(ctx), m.spinnerTickCmd(), progressListenerCmd(m.progressCh), errorListenerCmd(m.syncErrorCh))
 }
 
 // resolvedConfigPath returns where to save the config file.
@@ -1036,6 +1166,7 @@ func (m *AppModel) loadMainMenu() {
 	items := []list.Item{
 		listItem{Display: "Actualizar bases de datos", Value: "update"},
 		listItem{Display: "Ver estado de conexiones", Value: "status"},
+		listItem{Display: "Perfiles de configuración", Value: "profiles"},
 		listItem{Display: "Instalar en el sistema", Value: "install"},
 		listItem{Display: "Configuración", Value: "config"},
 		listItem{Display: "Salir", Value: "quit"},
@@ -1086,26 +1217,19 @@ func (m *AppModel) connectAndLoadTables() tea.Cmd {
 // runSync runs the sync operation via the sync engine
 func (m *AppModel) runSync(ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
-		// Diagnostic log — remove after debugging
-		logf, logClose := openDiagLog()
-		defer logClose()
-
 		if m.progressCh != nil {
 			defer close(m.progressCh)
 		}
-		progress := func(s string) {
-			logf("progress: %s", s)
+		if m.syncErrorCh != nil {
+			defer close(m.syncErrorCh)
+		}
+		progress := func(pu syncer.ProgressUpdate) {
 			if m.progressCh == nil {
 				return
 			}
-			s = strings.TrimSpace(s)
-			if s == "" {
-				return
-			}
 			select {
-			case m.progressCh <- s:
+			case m.progressCh <- pu:
 			default:
-				logf("progress DROP (channel full): %s", s)
 			}
 		}
 
@@ -1127,20 +1251,22 @@ func (m *AppModel) runSync(ctx context.Context) tea.Cmd {
 		default:
 			opts.Mode = m.action
 		}
-		logf("action=%s mode=%s table=%s dbf=%s month=%d year=%d", m.action, opts.Mode, m.table, m.dbfPath, m.month, m.year)
 
 		// Get record count BEFORE
-		logf("calling GetRecordCount...")
 		recordsBefore, _ := m.conn.GetRecordCount(m.table)
-		logf("GetRecordCount done: %d", recordsBefore)
 
 		result, err := m.engine.SyncTable(m.db, m.table, m.dbfPath, opts)
 		if err != nil {
-			logf("FATAL ERROR: %v", err)
 			return errorMsg{err}
 		}
-		for i, e := range result.ErrorMessages {
-			logf("sync error[%d]: %s", i, e)
+		// Send non-fatal errors to syncErrorCh for UI display
+		if m.syncErrorCh != nil {
+			for _, e := range result.SyncErrors {
+				select {
+				case m.syncErrorCh <- e:
+				default:
+				}
+			}
 		}
 
 		// Get record count AFTER
@@ -1160,7 +1286,9 @@ func (m *AppModel) runSync(ctx context.Context) tea.Cmd {
 			Inserted:      result.Inserted,
 			Updated:       result.Updated,
 			Skipped:       result.Skipped,
+			Duplicates:    result.Duplicates,
 			Errors:        result.Errors,
+			SyncErrors:    result.SyncErrors,
 			ErrorMessages: result.ErrorMessages,
 			RecordsAfter:  int(recordsAfter),
 			Duration:      result.Duration,
@@ -1191,8 +1319,12 @@ type installDoneMsg struct {
 	err    error
 }
 
-type progressMsg struct{ text string }
+type progressMsg struct{ update syncer.ProgressUpdate }
 type progressDoneMsg struct{}
+type errorCountMsg struct {
+	count int
+	done  bool // true when the channel was closed
+}
 
 // Helper list item type
 type listItem struct {
@@ -1204,18 +1336,6 @@ func (i listItem) FilterValue() string { return i.Value }
 func (i listItem) Title() string      { return i.Display }
 func (i listItem) Description() string { return "" }
 
-// openDiagLog opens /tmp/dbf-sync-diag.log for appending diagnostic output.
-// Returns a printf-style logf and a close func. Temporary — remove after debugging.
-func openDiagLog() (func(string, ...interface{}), func()) {
-	f, err := os.OpenFile("/tmp/dbf-sync-diag.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return func(string, ...interface{}) {}, func() {}
-	}
-	logf := func(format string, args ...interface{}) {
-		fmt.Fprintf(f, "[%s] "+format+"\n", append([]interface{}{time.Now().Format("15:04:05.000")}, args...)...)
-	}
-	return logf, func() { f.Close() }
-}
 
 // checkConnections pings all configured databases and returns results
 func (m *AppModel) checkConnections() tea.Cmd {

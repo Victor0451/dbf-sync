@@ -97,6 +97,8 @@ func (m *AppModel) View() tea.View {
 		content = m.viewConfig()
 	case StateConfigForm:
 		content = m.viewConfigForm()
+	case StateSelectProfile:
+		content = m.viewSelectProfile()
 	case StateQuit:
 		content = m.viewQuit()
 	default:
@@ -127,20 +129,29 @@ func (m *AppModel) viewMainMenu() string {
 	versionStyle := lipgloss.NewStyle().Foreground(Muted)
 	poweredStyle := lipgloss.NewStyle().Foreground(Accent)
 
-	left := fmt.Sprintf("DBF-SYNC  %s", versionStyle.Render("v"+m.version))
+	// Show active profile in banner if set
+	activeProfile := m.config.Settings.ActiveProfile
+	var title string
+	if activeProfile != "" {
+		title = fmt.Sprintf("DBF-SYNC  [%s]", activeProfile)
+	} else {
+		title = "DBF-SYNC"
+	}
+
+	left := fmt.Sprintf("%s  %s", title, versionStyle.Render("v"+m.version))
 	right := poweredStyle.Render("Powered by VML PROGRAMMING")
-	pad := m.width - 20 - len(m.version) - lipgloss.Width(right)
+	pad := m.width - 20 - len(m.version) - len(title) - lipgloss.Width(right)
 	if pad < 2 {
 		pad = 2
 	}
 	subtitle := left + strings.Repeat(" ", pad) + right
 
-	banner := titleStyle.Render("DBF-SYNC") + "\n" + subtitle
+	banner := titleStyle.Render(title) + "\n" + subtitle
 
 	sep := lipgloss.NewStyle().Foreground(Muted).Render(m.sep())
 	hint := HintStyle.Render("  Que queres hacer?")
 	menu := m.list.View()
-	nav := HintStyle.Render("  ↑/↓  navegar    Enter  confirmar    q  salir")
+	nav := HintStyle.Render("  ↑/↓  navegar    Enter  confirmar    q  salir    p  perfiles")
 
 	return banner + "\n" + sep + "\n" + hint + "\n\n" + menu + "\n" + nav
 }
@@ -316,11 +327,60 @@ func (m *AppModel) viewProcessing() string {
 	b.WriteString(crumbStyle.Render("  › ") + fmt.Sprintf("Base de datos:  %s\n", m.db))
 	b.WriteString(crumbStyle.Render("  › ") + fmt.Sprintf("Tabla:          %s\n", m.table))
 	b.WriteString(crumbStyle.Render("  › ") + fmt.Sprintf("Accion:         %s%s\n", getActionLabel(m.action), period))
-	b.WriteString("\n" + HintStyle.Render("  Este proceso puede tardar varios segundos.") + "\n")
-	if m.loadingMsg != "" {
-		stepStyle := lipgloss.NewStyle().Foreground(Accent)
-		b.WriteString(stepStyle.Render("  "+m.loadingMsg) + "\n")
+	b.WriteString("\n")
+
+	// Render progress bar
+	progressBarView := m.progressModel.View()
+	barStyle := lipgloss.NewStyle().Foreground(Accent)
+	b.WriteString(barStyle.Render("  "+progressBarView) + "\n")
+
+	// Render stats: "234,500 / 700,000", "ETA: 2m 15s", "34,200 rec/s"
+	statsStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
+	etaStyle := lipgloss.NewStyle().Foreground(Accent)
+	speedStyle := lipgloss.NewStyle().Foreground(Primary)
+
+	// Progress stats line
+	currentStr := formatNumber(m.progressModel.LastCurrent)
+	totalStr := "..."
+	if m.progressModel.Total > 0 {
+		totalStr = formatNumber(m.progressModel.Total)
 	}
+	statsLine := fmt.Sprintf("  %s / %s", currentStr, totalStr)
+
+	// ETA line
+	etaLine := ""
+	if m.progressModel.ETA != "" {
+		etaLine = "  ETA: " + m.progressModel.ETA
+	}
+
+	// Speed line
+	speedLine := ""
+	if m.progressModel.Speed != "" {
+		speedLine = "  " + m.progressModel.Speed
+	}
+
+	if m.progressModel.Phase != "" {
+		phaseStyle := lipgloss.NewStyle().Foreground(Accent).Bold(true)
+		b.WriteString(phaseStyle.Render("  Fase: "+m.progressModel.Phase) + "\n")
+	}
+	b.WriteString(statsStyle.Render(statsLine) + "\n")
+	if etaLine != "" {
+		b.WriteString(etaStyle.Render(etaLine) + "\n")
+	}
+	if speedLine != "" {
+		b.WriteString(speedStyle.Render(speedLine) + "\n")
+	}
+
+	// Error count banner - inline display during processing
+	if m.errorCount > 0 {
+		b.WriteString("\n")
+		errBannerStyle := lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#FF6B6B"))
+		b.WriteString(errBannerStyle.Render(fmt.Sprintf("  %d errores encontrados — se mostrarán al finalizar", m.errorCount)) + "\n")
+	}
+
+	b.WriteString("\n" + HintStyle.Render("  Este proceso puede tardar varios segundos.") + "\n")
 	b.WriteString(m.sep() + "\n")
 	return b.String()
 }
@@ -351,6 +411,7 @@ func (m *AppModel) viewSummary() string {
 			"  Insertados:    +%s\n"+
 			"  Actualizados:  %s\n"+
 			"  Omitidos:      %s\n"+
+			"  Duplicados:    %s\n"+
 			"  Errores:       %s\n"+
 			"  Despues:       %s\n"+
 			"  %s\n"+
@@ -364,6 +425,7 @@ func (m *AppModel) viewSummary() string {
 		formatNumber(result.Inserted),
 		formatNumber(result.Updated),
 		formatNumber(result.Skipped),
+		formatNumber(result.Duplicates),
 		errStyle.Render(formatNumber(result.Errors)),
 		formatNumber(result.RecordsAfter),
 		strings.Repeat("─", 30),
@@ -377,20 +439,78 @@ func (m *AppModel) viewSummary() string {
 
 	box := BoxStyle.Width(boxWidth).Render(inner)
 
-	errDetail := ""
-	if len(result.ErrorMessages) > 0 {
-		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B"))
-		var eb strings.Builder
-		eb.WriteString("\n")
-		for i, msg := range result.ErrorMessages {
-			eb.WriteString(errStyle.Render(fmt.Sprintf("  [%d] %s", i+1, msg)) + "\n")
+	// Error panel - scrollable list of detailed sync errors
+	errPanel := ""
+	if len(result.SyncErrors) > 0 {
+		var ep strings.Builder
+		ep.WriteString("\n")
+		ep.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFA500")).Render("  ▼ ERRORES DETALLADOS") + "\n")
+
+		// Calculate visible range
+		maxVisible := 5 // max errors to show without scrolling
+		errors := result.SyncErrors
+		offset := m.errorScrollOffset
+		if offset < 0 {
+			offset = 0
 		}
-		errDetail = eb.String()
+		if offset >= len(errors) {
+			offset = len(errors) - 1
+			if offset < 0 {
+				offset = 0
+			}
+		}
+
+		end := offset + maxVisible
+		if end > len(errors) {
+			end = len(errors)
+		}
+
+		for i := offset; i < end; i++ {
+			e := errors[i]
+			// Category icon
+			var icon string
+			switch e.Category {
+			case "connection":
+				icon = "🔌"
+			case "data":
+				icon = "💾"
+			case "validation":
+				icon = "✅"
+			case "timeout":
+				icon = "⏱️"
+			default:
+				icon = "⚠️"
+			}
+
+			// Truncate message if too long
+			msg := e.Message
+			if len(msg) > 50 {
+				msg = msg[:47] + "..."
+			}
+
+			// Format timestamp
+			ts := e.Timestamp.Format("15:04:05")
+
+			// Highlight current selection
+			if i == offset {
+				ep.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B")).Bold(true).Render(fmt.Sprintf("  %s %s  [%s]", icon, msg, ts)) + "\n")
+			} else {
+				ep.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC")).Render(fmt.Sprintf("  %s %s  [%s]", icon, msg, ts)) + "\n")
+			}
+		}
+
+		// Scroll indicator
+		if len(errors) > maxVisible {
+			scrollInfo := fmt.Sprintf("  (%d-%d/%d) j/k para navegar", offset+1, end, len(errors))
+			ep.WriteString(lipgloss.NewStyle().Foreground(Muted).Render(scrollInfo) + "\n")
+		}
+
+		errPanel = ep.String()
 	}
 
 	hint := HintStyle.Width(m.width - 4).Render("\n  Presiona cualquier tecla para continuar...")
 
-	return "\n" + box + errDetail + "\n" + hint
+	return "\n" + box + errPanel + "\n" + hint
 }
 
 func (m *AppModel) viewStatus() string {
@@ -522,6 +642,59 @@ func (m *AppModel) viewConfigForm() string {
 	if m.configSaveErr != nil {
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Bold(true)
 		b.WriteString("\n  " + errStyle.Render("Error: "+m.configSaveErr.Error()) + "\n")
+	}
+
+	return b.String()
+}
+
+func (m *AppModel) viewSelectProfile() string {
+	header := m.pageTitle("Seleccionar Perfil", nil, "↑/↓  navegar    Enter  seleccionar    Esc  volver")
+	var b strings.Builder
+	b.WriteString(header)
+	b.WriteString("\n")
+
+	profileNames := m.config.ProfileNames()
+	activeProfile := m.config.Settings.ActiveProfile
+
+	// First option: "(ninguno)" to clear active profile
+	cursorStyle := lipgloss.NewStyle().Foreground(Primary).Bold(true)
+	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
+	activeMarkerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Bold(true)
+
+	// Option 0: (ninguno)
+	if m.profileCursor == 0 {
+		b.WriteString(cursorStyle.Render("▶ (ninguno)") + "\n")
+	} else {
+		b.WriteString(normalStyle.Render("  (ninguno)") + "\n")
+	}
+
+	// Profile options
+	for i, name := range profileNames {
+		idx := i + 1 // +1 because index 0 is "(ninguno)"
+		line := "  " + name
+		// Show active marker if this profile is currently active
+		if activeProfile == name {
+			line = activeMarkerStyle.Render("▶ " + name + "  [activo]")
+		}
+		if m.profileCursor == idx {
+			if activeProfile == name {
+				b.WriteString(activeMarkerStyle.Render("▶ "+name+"  [activo]") + "\n")
+			} else {
+				b.WriteString(cursorStyle.Render("▶ "+name) + "\n")
+			}
+		} else {
+			if activeProfile == name {
+				b.WriteString(activeMarkerStyle.Render("  "+name+"  [activo]") + "\n")
+			} else {
+				b.WriteString(normalStyle.Render(line) + "\n")
+			}
+		}
+	}
+
+	// Show hint about no profiles
+	if len(profileNames) == 0 {
+		b.WriteString("\n")
+		b.WriteString(MutedStyle("  (sin perfiles definidos — agregalos en config.yaml)") + "\n")
 	}
 
 	return b.String()
