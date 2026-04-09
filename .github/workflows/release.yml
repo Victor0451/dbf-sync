@@ -30,7 +30,15 @@ jobs:
             -ldflags "-X main.version=${{ steps.version.outputs.VERSION }} \
                       -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
                       -X main.commit=${{ github.sha }}" \
-            -o dbf-sync-linux-amd64 .
+            -o dbf-sync-linux-amd64
+
+      - name: Build Linux (arm64)
+        run: |
+          GOOS=linux GOARCH=arm64 go build \
+            -ldflags "-X main.version=${{ steps.version.outputs.VERSION }} \
+                      -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+                      -X main.commit=${{ github.sha }}" \
+            -o dbf-sync-linux-arm64
 
       - name: Build Windows (amd64)
         run: |
@@ -38,11 +46,11 @@ jobs:
             -ldflags "-X main.version=${{ steps.version.outputs.VERSION }} \
                       -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
                       -X main.commit=${{ github.sha }}" \
-            -o dbf-sync-windows-amd64.exe .
+            -o dbf-sync-windows-amd64.exe
 
       - name: Create checksums
         run: |
-          sha256sum dbf-sync-linux-amd64 dbf-sync-windows-amd64.exe > checksums.txt
+          sha256sum dbf-sync-linux-amd64 dbf-sync-linux-arm64 dbf-sync-windows-amd64.exe > checksums.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -50,5 +58,6 @@ jobs:
           name: DBF-SYNC ${{ steps.version.outputs.VERSION }}
           files: |
             dbf-sync-linux-amd64
+            dbf-sync-linux-arm64
             dbf-sync-windows-amd64.exe
             checksums.txt
